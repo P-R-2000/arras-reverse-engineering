@@ -1106,12 +1106,11 @@ class ArrasClient extends EventEmitter {
     send(packet) {
         this.sentPacketCount++;
         this.ws.send(this.protocol.encrypt(this.protocol.encode(packet), this.sentPacketCount - 1n));
-        if (this.clientLogs) console.log("[CLIENT]", packet.map(v => util.inspect(v, { compact: true, colors: true, maxStringLength: Infinity })).join(" "));
+        if (this.clientLogs) console.log("[CLIENT]", packet.map(v => util.inspect(typeof v === "object" ? v.value : v, { compact: true, colors: true, maxStringLength: Infinity })).join(" "));
     }
     message(event) {
         this.receivedPacketCount++;
         const packet = this.protocol.decode(this.protocol.decrypt(event.data.slice(0, -6), this.receivedPacketCount - 1n));
-        //if (this.serverLogs) console.log("[SERVER]", JSON.stringify(packet)/*packet.map(v => util.inspect(v, { compact: true, colors: true, maxStringLength: Infinity })).join(" ")*/);
 
         const type = packet.shift();
 
