@@ -64,6 +64,8 @@
         "force_aspect_ratio": "bool",
         "self_centered_minimap": "bool",
         "brainrot_filter": "bool",
+        "dmca": "bool",
+        "localhost": "bool",
         "skill_save": "bool",
         "player_list": "bool",
         "legacy_themes": "bool"
