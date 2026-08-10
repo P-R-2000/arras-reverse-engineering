@@ -891,7 +891,7 @@ const serverPackets = {
             });
         }
 
-        let minimapChangedLength = packet[i++].number.signed;
+        let minimapChangedLength = packet[i++].number;
         if (minimapChangedLength.signed === -1) minimapChangedLength = minimapChangedLength.signed;
         else minimapChangedLength = minimapChangedLength.unsigned;
         for (let j = 0; j < minimapChangedLength; j++) {
@@ -905,7 +905,7 @@ const serverPackets = {
             });
         }
 
-        let teamMinimapRemovedLength = packet[i++].number.signed;
+        let teamMinimapRemovedLength = packet[i++].number;
         if (teamMinimapRemovedLength.signed === -1) teamMinimapRemovedLength = teamMinimapRemovedLength.signed;
         else teamMinimapRemovedLength = teamMinimapRemovedLength.unsigned;
         for (let j = 0; j < teamMinimapRemovedLength; j++) {
@@ -914,7 +914,7 @@ const serverPackets = {
             });
         }
 
-        let teamMinimapChangedLength = packet[i++].number.signed;
+        let teamMinimapChangedLength = packet[i++].number;
         if (teamMinimapChangedLength.signed === -1) teamMinimapChangedLength = teamMinimapChangedLength.signed;
         else teamMinimapChangedLength = teamMinimapChangedLength.unsigned;
         for (let j = 0; j < teamMinimapChangedLength; j++) {
@@ -926,7 +926,7 @@ const serverPackets = {
             });
         }
 
-        let leaderboardRemovedLength = packet[i++].number.signed;
+        let leaderboardRemovedLength = packet[i++].number;
         if (leaderboardRemovedLength.signed === -1) leaderboardRemovedLength = leaderboardRemovedLength.signed;
         else leaderboardRemovedLength = leaderboardRemovedLength.unsigned;
         for (let j = 0; j < leaderboardRemovedLength; j++) {
@@ -935,7 +935,7 @@ const serverPackets = {
             });
         }
 
-        let leaderboardChangedLength = packet[i++].number.signed;
+        let leaderboardChangedLength = packet[i++].number;
         if (leaderboardChangedLength.signed === -1) leaderboardChangedLength = leaderboardChangedLength.signed;
         else leaderboardChangedLength = leaderboardChangedLength.unsigned;
         for (let j = 0; j < leaderboardChangedLength; j++) {
