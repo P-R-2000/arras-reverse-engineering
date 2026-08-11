@@ -1029,7 +1029,7 @@ class ArrasClient extends EventEmitter {
     static BUILD = "2c170ae5c3f70dd0";
     static PROTOCOLS = ["arras.io#v1.4+sls+et0", "arras.io"];
 
-    constructor(server, { playerName, playerId, playerToken, travelToken, partyId, autoLevelUp, incognito, trackingData, ignoreUnusedPackets, serverLogs, clientLogs } = {}) {
+    constructor(server, { playerName, playerId, playerToken, travelToken, partyId, autoLevelUp, incognito, trackingData, ignoreUnusedPackets, proxy, serverLogs, clientLogs } = {}) {
         super();
 
         this.playerName = playerName ?? "";
@@ -1051,7 +1051,8 @@ class ArrasClient extends EventEmitter {
             {
                 headers: {
                     origin: "https://arras.io"
-                }
+                },
+                agent: proxy
             }
         );
         this.ws.addEventListener("open", () => {
