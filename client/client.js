@@ -62,60 +62,33 @@ const decoder = new TextDecoder();
 function rotl(x, n) {
     return x << n | x >>> (32 - n);
 }
-function generateKey(a) {
-    const b = new Int32Array(a);
-    let c,d,e,f;
-    for (let i = 0; i < 10; i++) {
-        b[3] = b[7] + b[3];
-        b[15] = rotl(b[3] ^ b[15], 16);
-        b[11] = b[15] + b[11];
-        b[7] = rotl(b[11] ^ b[7], 12);
-        b[2] = b[6] + b[2];
-        b[14] = rotl(b[2] ^ b[14], 16);
-        b[10] = b[14] + b[10];
-        b[6] = rotl(b[10] ^ b[6], 12);
-        b[1] = b[5] + b[1];
-        b[13] = rotl(b[1] ^ b[13], 16);
-        b[9] = b[13] + b[9];
-        b[5] = rotl(b[9] ^ b[5], 12);
-        b[1] = b[5] + b[1];
-        b[13] = rotl(b[1] ^ b[13], 8);
-        f = (b[13] + b[9]) | 0;
-        b[0] =
-            f +
-            (b[14] =
-                rotl((c = rotl((b[2] = b[6] + b[2]) ^ b[14], 8)) ^
-                    (b[9] = (d = b[7] + b[3]) +
-                        (b[4] = rotl((b[8] = rotl(b[4] ^ (b[12] = (b[4] = rotl((b[0] = b[0] + b[4]) ^ b[12], 16)) + b[8]), 12)) ^
-                            (b[8] = b[12] + (b[12] = rotl((e = b[0] + b[8]) ^ b[4], 8))), 7))), 16));
-        b[9] =
-            b[0] +
-            (b[14] =
-                rotl(b[14] ^
-                    (b[3] = (b[4] = rotl(b[0] ^ b[4], 12)) +
-                        b[9]), 8));
-        b[4] = rotl(b[9] ^ b[4], 7);
-        b[7] =
-            b[8] +
-            (b[11] =
-                rotl(b[13] ^ (b[13] = (b[8] = rotl((b[0] = (b[15] = rotl(b[15] ^ d, 8)) + b[11]) ^ b[7], 7)) + b[2]), 16));
-        b[8] =
-            b[7] +
-            (b[13] = rotl(b[11] ^ (b[2] = (b[7] = rotl(b[7] ^ b[8], 12)) + b[13]), 8));
-        b[7] = rotl(b[8] ^ b[7], 7);
-        b[11] = rotl(b[12] ^ (b[12] = (b[6] = rotl((b[10] = b[10] + c) ^ b[6], 7)) + b[1]), 16);
-        b[0] = b[11] + b[0];
-        b[11] = b[0] + (b[12] = rotl(b[11] ^ (b[1] = (b[6] = rotl(b[0] ^ b[6], 12)) + b[12]), 8));
-        b[6] = rotl(b[11] ^ b[6], 7);
-        b[5] = b[10] + (b[15] = rotl((b[10] = (b[0] = rotl(b[5] ^ f, 7)) + e) ^ b[15], 16));
-        b[10] = b[5] + (b[15] = rotl(b[15] ^ (b[0] = (f = rotl(b[5] ^ b[0], 12)) + b[10]), 8));
-        b[5] = rotl(b[10] ^ f, 7);
+function quarterRound(output, a, b, c, d) {
+    output[a] += output[b];
+    output[d] = rotl(output[d] ^ output[a], 16);
+    output[c] += output[d];
+    output[b] = rotl(output[b] ^ output[c], 12);
+    output[a] += output[b];
+    output[d] = rotl(output[d] ^ output[a],  8);
+    output[c] += output[d];
+    output[b] = rotl(output[b] ^ output[c],  7);
+}
+function chacha20(state) {
+    const output = new Int32Array(16);
+    output.set(state);
+    for (let i = 0; i < 10; i += 1) {
+        quarterRound(output, 0, 4, 8, 12);
+        quarterRound(output, 1, 5, 9, 13);
+        quarterRound(output, 2, 6, 10, 14);
+        quarterRound(output, 3, 7, 11, 15);
+        quarterRound(output, 0, 5, 10, 15);
+        quarterRound(output, 1, 6, 11, 12);
+        quarterRound(output, 2, 7, 8, 13);
+        quarterRound(output, 3, 4, 9, 14);
     }
-    const output = new Int32Array(a.length);
-    for (let i = 0; i < a.length; i++) {
-        output[i] = a[i] + b[i];
+    for (let i = 0; i < 16; i++) {
+        output[i] = state[i] + output[i];
     }
-    return output;
+    return new Uint8Array(output.buffer);
 }
 
 function signExtend(value, bits) {
@@ -173,30 +146,44 @@ function unsigned(value) {
 class ArrasProtocol {
     constructor(key) {
         this.key = key;
-    }
-    encrypt(packet, packetIndex) {
-        const size = packet.length;
+        this.sentPacketCount = 0n;
+        this.receivedPacketCount = 0n;
 
+        this.encryptStateBuffer = Buffer.alloc(64);
+        this.encryptStateBuffer.writeBigInt64LE(3684054920433006693n, 0);
+        this.encryptStateBuffer.writeBigInt64LE(7719281312240119090n, 8);
+        this.encryptStateBuffer.writeBigInt64LE(this.key[0], 16);
+        this.encryptStateBuffer.writeBigInt64LE(this.key[1], 24);
+        this.encryptStateBuffer.writeBigInt64LE(this.key[2], 32);
+        this.encryptStateBuffer.writeBigInt64LE(this.key[3], 40);
+        this.encryptStateBuffer.writeInt32LE(0, 52);
+        this.encryptStateArray = new Int32Array(this.encryptStateBuffer.buffer);
+        
+        this.decryptStateBuffer = Buffer.alloc(64);
+        this.decryptStateBuffer.writeBigInt64LE(3684054920433006693n, 0);
+        this.decryptStateBuffer.writeBigInt64LE(7719281312240119090n, 8);
+        this.decryptStateBuffer.writeBigInt64LE(this.key[0], 16);
+        this.decryptStateBuffer.writeBigInt64LE(this.key[1], 24);
+        this.decryptStateBuffer.writeBigInt64LE(this.key[2], 32);
+        this.decryptStateBuffer.writeBigInt64LE(this.key[3], 40);
+        this.decryptStateBuffer.writeInt32LE(0, 52);
+        this.decryptStateBuffer.writeInt32LE(-2147483648, 60);
+        this.decryptStateArray = new Int32Array(this.decryptStateBuffer.buffer);
+    }
+    encrypt(packet) {
+        this.sentPacketCount++;
+        const packetIndex = this.sentPacketCount - 1n;
+
+        const size = packet.length;
         const dataBuffer = Buffer.alloc(size + 6);
 
-        const stateBuffer = Buffer.alloc(64);
-        const stateArray = new Int32Array(stateBuffer.buffer);
-
-        stateBuffer.writeBigInt64LE(3684054920433006693n, 0);
-        stateBuffer.writeBigInt64LE(7719281312240119090n, 8);
-        stateBuffer.writeBigInt64LE(this.key[0], 16);
-        stateBuffer.writeBigInt64LE(this.key[1], 24);
-        stateBuffer.writeBigInt64LE(this.key[2], 32);
-        stateBuffer.writeBigInt64LE(this.key[3], 40);
-        
-        stateBuffer.writeInt32LE(0, 52);
-        stateBuffer.writeInt32LE(Number(BigInt.asIntN(32, packetIndex)), 56);
-        stateBuffer.writeInt32LE(Number(BigInt.asIntN(32, packetIndex >> 32n)), 60);
+        this.encryptStateBuffer.writeInt32LE(Number(BigInt.asIntN(32, packetIndex)), 56);
+        this.encryptStateBuffer.writeInt32LE(Number(BigInt.asIntN(32, packetIndex >> 32n)), 60);
 
         for (let i = 0; i < size; i += 64) {
-            stateBuffer.writeInt32LE(i / 64, 48);
+            this.encryptStateBuffer.writeInt32LE(i / 64, 48);
 
-            const chunkKey = new Uint8Array(generateKey(stateArray).buffer);
+            const chunkKey = chacha20(this.encryptStateArray);
 
             for (let j = 0; j < 64 && i + j < size; j++) dataBuffer.writeUint8(packet[i + j] ^ chunkKey[j], i + j);
         }
@@ -217,31 +204,24 @@ class ArrasProtocol {
 
         return dataBuffer;
     }
-    decrypt(packet, packetIndex) {
-        const size = packet.length;
+    decrypt(packet, packets = false) {
+        this.receivedPacketCount++;
+        const packetIndex = this.receivedPacketCount - 1n;
 
+        const size = packet.length;
         const dataBuffer = Buffer.alloc(size);
 
-        const stateBuffer = Buffer.alloc(64);
-        const stateArray = new Int32Array(stateBuffer.buffer);
-
-        stateBuffer.writeBigInt64LE(3684054920433006693n, 0);
-        stateBuffer.writeBigInt64LE(7719281312240119090n, 8);
-        stateBuffer.writeBigInt64LE(this.key[0], 16);
-        stateBuffer.writeBigInt64LE(this.key[1], 24);
-        stateBuffer.writeBigInt64LE(this.key[2], 32);
-        stateBuffer.writeBigInt64LE(this.key[3], 40);
-        
-        stateBuffer.writeInt32LE(0, 52);
-        stateBuffer.writeInt32LE(Number(BigInt.asIntN(32, packetIndex)), 56);
-        stateBuffer.writeInt32LE(-2147483648, 60);
+        this.decryptStateBuffer.writeInt32LE(Number(BigInt.asIntN(32, packetIndex)), 56);
 
         for (let i = 0; i < size; i += 64) {
-            stateBuffer.writeInt32LE(i / 64, 48);
+            this.decryptStateBuffer.writeInt32LE(i / 64, 48);
 
-            const chunkKey = new Uint8Array(generateKey(stateArray).buffer);
+            const chunkKey = chacha20(this.decryptStateArray);
 
-            for (let j = 0; j < 64 && i + j < size; j++) dataBuffer.writeUint8(packet[i + j] ^ chunkKey[j], i + j);
+            for (let j = 0; j < 64 && i + j < size; j++) {
+                if (i === 0 && j === 0 && packets && !packets.includes(packet[0] ^ chunkKey[0])) return false;
+                dataBuffer.writeUint8(packet[i + j] ^ chunkKey[j], i + j);
+            }
         }
         return new Uint8Array(dataBuffer);
     }
@@ -558,7 +538,7 @@ const serverPackets = {
     R (packet) { // room
         let i = 0;
 
-        const mode = packet[i++].string.value;
+        const info = Object.fromEntries(packet[i++].string.value.split(",").map(d => d.split("=")));
         const roomX1 = packet[i++].number.signed;
         const roomY1 = packet[i++].number.signed;
         const roomX2 = packet[i++].number.signed;
@@ -576,7 +556,7 @@ const serverPackets = {
         }
 
         return {
-            mode,
+            info,
             roomX1,
             roomY1,
             roomX2,
@@ -1049,7 +1029,7 @@ class ArrasClient extends EventEmitter {
     static BUILD = "2c170ae5c3f70dd0";
     static PROTOCOLS = ["arras.io#v1.4+sls+et0", "arras.io"];
 
-    constructor(server, { playerName, playerId, playerToken, travelToken, partyId, autoLevelUp, incognito, trackingData, serverLogs, clientLogs } = {}) {
+    constructor(server, { playerName, playerId, playerToken, travelToken, partyId, autoLevelUp, incognito, trackingData, ignoreUnusedPackets, serverLogs, clientLogs } = {}) {
         super();
 
         this.playerName = playerName ?? "";
@@ -1061,6 +1041,7 @@ class ArrasClient extends EventEmitter {
         this.incognito = incognito ?? false;
         this.trackingData = trackingData ?? false;
 
+        this.ignoreUnusedPackets = ignoreUnusedPackets ?? false;
         this.serverLogs = serverLogs ?? false;
         this.clientLogs = clientLogs ?? false;
 
@@ -1088,6 +1069,7 @@ class ArrasClient extends EventEmitter {
             }, clientKeys.privateKey, 256);
             this.protocol = new ArrasProtocol(new BigInt64Array(sharedKey));
 
+            this.usedPackets = this.ignoreUnusedPackets ? ["w", "p", "e", "C", ...Object.keys(this._events).filter(event => event.length === 1)].map(c => c.charCodeAt(0)) : false;
             this.ws.addEventListener("message", e => this.message(e));
 
             const clientPublicKey = await crypto.subtle.exportKey("raw", clientKeys.publicKey);
@@ -1099,21 +1081,18 @@ class ArrasClient extends EventEmitter {
 
         this.ws.addEventListener("close", e => this.emit("close", e));
         this.ws.addEventListener("error", e => this.emit("error", e))
-        
-        this.sentPacketCount = 0n;
-        this.receivedPacketCount = 0n;
     }
     send(packet) {
-        this.sentPacketCount++;
-        this.ws.send(this.protocol.encrypt(this.protocol.encode(packet), this.sentPacketCount - 1n));
+        this.ws.send(this.protocol.encrypt(this.protocol.encode(packet)));
         if (this.clientLogs) console.log("[CLIENT]", packet.map(v => util.inspect(typeof v === "object" ? v.value : v, { compact: true, colors: true, maxStringLength: Infinity })).join(" "));
     }
     message(event) {
-        this.receivedPacketCount++;
-        const packet = this.protocol.decode(this.protocol.decrypt(event.data.slice(0, -6), this.receivedPacketCount - 1n));
+        const rawPacket = this.protocol.decrypt(event.data.slice(0, -6), this.usedPackets);
+        if (!rawPacket) return;
+
+        const packet = this.protocol.decode(rawPacket);
 
         const type = packet.shift();
-
         if (!serverPackets[type]) throw `Unknown packet type ${type}`;
 
         const data = serverPackets[type](packet);
@@ -1147,7 +1126,7 @@ class ArrasClient extends EventEmitter {
                         string = String.fromCharCode(n % 64 + 48) + string;
                         n = Math.floor(n / 64);
                     }
-                    if (crypto.createHash("sha256").update(string + input).digest("hex").startsWith("0000")) break;
+                    if (crypto.createHash("sha256").update(string + input).digest().readUint16LE() === 0) break;
                 }
                 this.send(clientPackets.R(input, string));
                 break;
