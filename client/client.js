@@ -204,7 +204,7 @@ class ArrasProtocol {
 
         return dataBuffer;
     }
-    decrypt(packet, packets = false) {
+    decrypt(packet, packets) {
         this.receivedPacketCount++;
         const packetIndex = this.receivedPacketCount - 1n;
 
@@ -499,7 +499,7 @@ const clientPackets = {
     0 (keyCode, isKeyDown) {
         // key command - key press info
         // sends keydown and keyup information only while the sandbox key is being held
-        // keyCode: the KeyboardEvent.prototype.code of a key press
+        // keyCode: the KeyboardEvent.prototype.code of a key press (use Self for the sandbox key `)
         // isKeyDown: true for keydown, false for keyup
 
         return ["0", keyCode, unsigned(isKeyDown)];
@@ -757,7 +757,7 @@ const serverPackets = {
             changed.push({
                 socketId: socketId,
                 self: Boolean(flag & 1),
-                operatorLevel: (flag & 1 ? flag - 1 : flag) / 2,
+                operatorLevel: flag >> 1,
                 name,
                 mockupIndex
             });

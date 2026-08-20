@@ -129,8 +129,8 @@ client.on("P", ({ removed, changed }) => {
 
     for (const player of changed) {
         const index = game.players.findIndex(p => p.socketId === player.socketId);
-        if (index >= 0) game.entities[index] = player;
-        else game.entities.push(player);
+        if (index >= 0) game.players[index] = player;
+        else game.players.push(player);
 
         if (player.self) {
             game.player = player;
