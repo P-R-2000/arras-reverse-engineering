@@ -6,6 +6,7 @@ const vm = require("vm");
 
 const vmContext = {
     chrome: {},
+    navigator: {},
     localStorage: {
         "arras.io": "PxNSfF-=-pQ}Ju^L;FCS^3>dSn)e)akcI)WcAOW,<?Ku&$/5HWj1)-TSa4nEe[&OA5U6Q=q$9iy6KNRCvqOA<a|X1LRi:XOGJ"
     },
