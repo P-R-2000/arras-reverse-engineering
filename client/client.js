@@ -457,6 +457,11 @@ const clientPackets = {
 
         return ["R", input, result];
     },
+    G (id, token, error = "") {
+        // turnstile token
+
+        return ["G", id, token, error];
+    },
     U (index) {
         // upgrade request - upgrades to a tank
         // index - the tank index in the upgrades
@@ -848,6 +853,12 @@ const serverPackets = {
         return {
             id: packet[0].string.value,
             code: packet[1].string.value
+        };
+    },
+    G (packet) { // turnstile request
+        return {
+            id: packet[0].string.value,
+            siteKey: packet[1].string.value
         };
     },
     p () { // ping
