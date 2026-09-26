@@ -5,61 +5,33 @@ const localStorageDef = require("./localStorageDef.json");
 function rotl(x, n) {
     return x << n | x >>> (32 - n);
 }
-
-function generateKey(a) {
-    const b = new Int32Array(a);
-    let c,d,e,f;
-    for (let i = 0; i < 10; i++) {
-        b[3] = b[7] + b[3];
-        b[15] = rotl(b[3] ^ b[15], 16);
-        b[11] = b[15] + b[11];
-        b[7] = rotl(b[11] ^ b[7], 12);
-        b[2] = b[6] + b[2];
-        b[14] = rotl(b[2] ^ b[14], 16);
-        b[10] = b[14] + b[10];
-        b[6] = rotl(b[10] ^ b[6], 12);
-        b[1] = b[5] + b[1];
-        b[13] = rotl(b[1] ^ b[13], 16);
-        b[9] = b[13] + b[9];
-        b[5] = rotl(b[9] ^ b[5], 12);
-        b[1] = b[5] + b[1];
-        b[13] = rotl(b[1] ^ b[13], 8);
-        f = (b[13] + b[9]) | 0;
-        b[0] =
-            f +
-            (b[14] =
-                rotl((c = rotl((b[2] = b[6] + b[2]) ^ b[14], 8)) ^
-                    (b[9] = (d = b[7] + b[3]) +
-                        (b[4] = rotl((b[8] = rotl(b[4] ^ (b[12] = (b[4] = rotl((b[0] = b[0] + b[4]) ^ b[12], 16)) + b[8]), 12)) ^
-                            (b[8] = b[12] + (b[12] = rotl((e = b[0] + b[8]) ^ b[4], 8))), 7))), 16));
-        b[9] =
-            b[0] +
-            (b[14] =
-                rotl(b[14] ^
-                    (b[3] = (b[4] = rotl(b[0] ^ b[4], 12)) +
-                        b[9]), 8));
-        b[4] = rotl(b[9] ^ b[4], 7);
-        b[7] =
-            b[8] +
-            (b[11] =
-                rotl(b[13] ^ (b[13] = (b[8] = rotl((b[0] = (b[15] = rotl(b[15] ^ d, 8)) + b[11]) ^ b[7], 7)) + b[2]), 16));
-        b[8] =
-            b[7] +
-            (b[13] = rotl(b[11] ^ (b[2] = (b[7] = rotl(b[7] ^ b[8], 12)) + b[13]), 8));
-        b[7] = rotl(b[8] ^ b[7], 7);
-        b[11] = rotl(b[12] ^ (b[12] = (b[6] = rotl((b[10] = b[10] + c) ^ b[6], 7)) + b[1]), 16);
-        b[0] = b[11] + b[0];
-        b[11] = b[0] + (b[12] = rotl(b[11] ^ (b[1] = (b[6] = rotl(b[0] ^ b[6], 12)) + b[12]), 8));
-        b[6] = rotl(b[11] ^ b[6], 7);
-        b[5] = b[10] + (b[15] = rotl((b[10] = (b[0] = rotl(b[5] ^ f, 7)) + e) ^ b[15], 16));
-        b[10] = b[5] + (b[15] = rotl(b[15] ^ (b[0] = (f = rotl(b[5] ^ b[0], 12)) + b[10]), 8));
-        b[5] = rotl(b[10] ^ f, 7);
+function quarterRound(output, a, b, c, d) {
+    output[a] += output[b];
+    output[d] = rotl(output[d] ^ output[a], 16);
+    output[c] += output[d];
+    output[b] = rotl(output[b] ^ output[c], 12);
+    output[a] += output[b];
+    output[d] = rotl(output[d] ^ output[a],  8);
+    output[c] += output[d];
+    output[b] = rotl(output[b] ^ output[c],  7);
+}
+function chacha20(state) {
+    const output = new Int32Array(16);
+    output.set(state);
+    for (let i = 0; i < 10; i += 1) {
+        quarterRound(output, 0, 4, 8, 12);
+        quarterRound(output, 1, 5, 9, 13);
+        quarterRound(output, 2, 6, 10, 14);
+        quarterRound(output, 3, 7, 11, 15);
+        quarterRound(output, 0, 5, 10, 15);
+        quarterRound(output, 1, 6, 11, 12);
+        quarterRound(output, 2, 7, 8, 13);
+        quarterRound(output, 3, 4, 9, 14);
     }
-    const output = new Int32Array(a.length);
-    for (let i = 0; i < a.length; i++) {
-        output[i] = a[i] + b[i];
+    for (let i = 0; i < 16; i++) {
+        output[i] = state[i] + output[i];
     }
-    return output;
+    return new Uint8Array(output.buffer);
 }
 
 const encodeTable = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!$%&()+,-./:;<=>?[]^{|}".split("");
@@ -88,13 +60,12 @@ function decryptLocalStorage(input) {
     stateBuffer.writeBigInt64LE(2857145462548429679n, 40);
 
     stateBuffer.writeInt32LE(0, 52);
-    stateBuffer.writeInt32LE(inputBuffer.readInt32LE(size + 8), 56);
-    stateBuffer.writeInt32LE(inputBuffer.readInt32LE(size + 12), 60);
+    stateBuffer.writeBigInt64LE(inputBuffer.readBigInt64LE(size + 8), 56);
 
     for (let i = 0; i < size; i += 64) {
         stateBuffer.writeInt32LE(i / 64, 48);
 
-        const chunkKey = new Uint8Array(generateKey(stateArray).buffer);
+        const chunkKey = chacha20(stateArray);
 
         for (let j = 0; j < 64 && i + j < size; j++) dataBuffer.writeUint8(data[i + j] ^ chunkKey[j], i + j);
     }
@@ -111,8 +82,7 @@ function encryptLocalStorage(input) {
     const stateBuffer = Buffer.alloc(64);
     const stateArray = new Int32Array(stateBuffer.buffer);
 
-    const n = Math.floor(Math.random() * 1_000_000_000);
-    const m = Math.floor(Math.random() * 1_000_000_000);
+    const nonce = crypto.randomBytes(64).readBigInt64LE();
 
     stateBuffer.writeBigInt64LE(3684054920433006693n, 0);
     stateBuffer.writeBigInt64LE(7719281312240119090n, 8);
@@ -122,13 +92,12 @@ function encryptLocalStorage(input) {
     stateBuffer.writeBigInt64LE(2857145462548429679n, 40);
 
     stateBuffer.writeInt32LE(0, 52);
-    stateBuffer.writeInt32LE(n, 56);
-    stateBuffer.writeInt32LE(m, 60);
+    stateBuffer.writeBigInt64LE(nonce, 56);
 
     for (let i = 0; i < size; i += 64) {
         stateBuffer.writeInt32LE(i / 64, 48);
 
-        const chunkKey = new Uint8Array(generateKey(stateArray).buffer);
+        const chunkKey = chacha20(stateArray);
 
         for (let j = 0; j < 64 && i + j < size; j++) dataBuffer.writeUint8(data[i + j] ^ chunkKey[j], i + j);
     }
@@ -140,14 +109,12 @@ function encryptLocalStorage(input) {
     hashDataBuffer.writeBigInt64LE(-8740294561011147131n, size + 8);
     hashDataBuffer.writeBigInt64LE(-736570361772537783n, size + 16);
     hashDataBuffer.writeBigInt64LE(2857145462548429679n, size + 24);
-    hashDataBuffer.writeInt32LE(n, size + 32);
-    hashDataBuffer.writeInt32LE(m, size + 36);
+    hashDataBuffer.writeBigInt64LE(nonce, size + 32);
 
     const hashBuffer = crypto.createHash("sha256").update(hashDataBuffer).digest();
 
     dataBuffer.writeBigInt64LE(hashBuffer.readBigInt64LE(0), size);
-    dataBuffer.writeInt32LE(n, size + 8);
-    dataBuffer.writeInt32LE(m, size + 12);
+    dataBuffer.writeBigInt64LE(nonce, size + 8);
 
     return ascii85.encode(dataBuffer, encodeTable).toString();
 }
@@ -263,7 +230,7 @@ function setLocalStorage(object) {
     }
     buffer.writeInt16LE(i, 0);
 
-    return encryptLocalStorage(buffer.slice(0, i + 2));
+    return encryptLocalStorage(buffer.subarray(0, i + 2));
 }
 
 module.exports = { getLocalStorage, setLocalStorage };
