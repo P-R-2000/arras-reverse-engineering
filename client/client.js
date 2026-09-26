@@ -19,15 +19,14 @@ const vmContext = {
 vm.createContext(vmContext);
 
 class GrowableBuffer {
-    constructor(size) {
-        this.buffer = Buffer.alloc(size);
+    constructor() {
+        this.arrayBuffer = new ArrayBuffer(0, { maxByteLength: 2 ** 32 });
+        this.buffer = Buffer.from(this.arrayBuffer);
         this.offset = 0;
     }
     check(size) {
-        if (this.buffer.byteLength - this.offset < size) {
-            const buffer = Buffer.alloc(this.offset + size);
-            this.buffer.copy(buffer);
-            this.buffer = buffer;
+        if (this.arrayBuffer.byteLength - this.offset < size) {
+            this.arrayBuffer.resize(this.offset + size);
         }
     }
     write(data) {
@@ -92,56 +91,14 @@ function chacha20(state) {
     return new Uint8Array(output.buffer);
 }
 
-function signExtend(value, bits) {
-    const v = BigInt(value);
-    const signBit = 1n << BigInt(bits - 1);
-    const fullBit = 1n << BigInt(bits);
-    return Number((v & signBit) ? v - fullBit : v);
-}
+function clz64(number) {
+    if (number === 0n) return 64;
 
-function encodeSigned(value, bits) {
-    if (value < 0) return value + 2 ** bits;
-    return value;
-}
+    const high = Number(number >> 32n);
+    if (high !== 0) return Math.clz32(high);
 
-function number(value, bits) {
-    return {
-        number: {
-            unsigned: value,
-            get signed() {
-                if (!bits) return value <= 96 ? value : value - 192;
-                return signExtend(value, bits);
-            },
-            get bool() {
-                return value !== 0;
-            }
-        }
-    };
-}
-
-function float(value) {
-    return {
-        number: {
-            signed: value,
-            unsigned: value
-        }
-    }
-}
-
-function string(value) {
-    return {
-        string: {
-            value
-        }
-    }
-}
-
-function signed(value) {
-    return { signed: true, value };
-}
-
-function unsigned(value) {
-    return { unsigned: true, value };
+    const low = Number(number & 0xffffffffn);
+    return Math.clz32(low) + 32;
 }
 
 class ArrasProtocol {
@@ -150,41 +107,28 @@ class ArrasProtocol {
         this.sentPacketCount = 0n;
         this.receivedPacketCount = 0n;
 
-        this.encryptStateBuffer = Buffer.alloc(64);
-        this.encryptStateBuffer.writeBigInt64LE(3684054920433006693n, 0);
-        this.encryptStateBuffer.writeBigInt64LE(7719281312240119090n, 8);
-        this.encryptStateBuffer.writeBigInt64LE(this.key[0], 16);
-        this.encryptStateBuffer.writeBigInt64LE(this.key[1], 24);
-        this.encryptStateBuffer.writeBigInt64LE(this.key[2], 32);
-        this.encryptStateBuffer.writeBigInt64LE(this.key[3], 40);
-        this.encryptStateBuffer.writeInt32LE(0, 52);
-        this.encryptStateArray = new Int32Array(this.encryptStateBuffer.buffer);
-        
-        this.decryptStateBuffer = Buffer.alloc(64);
-        this.decryptStateBuffer.writeBigInt64LE(3684054920433006693n, 0);
-        this.decryptStateBuffer.writeBigInt64LE(7719281312240119090n, 8);
-        this.decryptStateBuffer.writeBigInt64LE(this.key[0], 16);
-        this.decryptStateBuffer.writeBigInt64LE(this.key[1], 24);
-        this.decryptStateBuffer.writeBigInt64LE(this.key[2], 32);
-        this.decryptStateBuffer.writeBigInt64LE(this.key[3], 40);
-        this.decryptStateBuffer.writeInt32LE(0, 52);
-        this.decryptStateBuffer.writeInt32LE(-2147483648, 60);
-        this.decryptStateArray = new Int32Array(this.decryptStateBuffer.buffer);
+        this.stateBuffer = Buffer.alloc(64);
+        this.stateBuffer.writeBigInt64LE(3684054920433006693n, 0);
+        this.stateBuffer.writeBigInt64LE(7719281312240119090n, 8);
+        this.stateBuffer.writeBigInt64LE(this.key[0], 16);
+        this.stateBuffer.writeBigInt64LE(this.key[1], 24);
+        this.stateBuffer.writeBigInt64LE(this.key[2], 32);
+        this.stateBuffer.writeBigInt64LE(this.key[3], 40);
+        this.stateBuffer.writeInt32LE(0, 52);
+        this.stateArray = new Int32Array(this.stateBuffer.buffer);
     }
     encrypt(packet) {
-        this.sentPacketCount++;
-        const packetIndex = this.sentPacketCount - 1n;
+        const packetIndex = this.sentPacketCount++;
 
         const size = packet.length;
         const dataBuffer = Buffer.alloc(size + 6);
 
-        this.encryptStateBuffer.writeInt32LE(Number(BigInt.asIntN(32, packetIndex)), 56);
-        this.encryptStateBuffer.writeInt32LE(Number(BigInt.asIntN(32, packetIndex >> 32n)), 60);
+        this.stateBuffer.writeBigInt64LE(packetIndex, 56);
 
         for (let i = 0; i < size; i += 64) {
-            this.encryptStateBuffer.writeInt32LE(i / 64, 48);
+            this.stateBuffer.writeInt32LE(i / 64, 48);
 
-            const chunkKey = chacha20(this.encryptStateArray);
+            const chunkKey = chacha20(this.stateArray);
 
             for (let j = 0; j < 64 && i + j < size; j++) dataBuffer.writeUint8(packet[i + j] ^ chunkKey[j], i + j);
         }
@@ -206,18 +150,17 @@ class ArrasProtocol {
         return dataBuffer;
     }
     decrypt(packet, packets) {
-        this.receivedPacketCount++;
-        const packetIndex = this.receivedPacketCount - 1n;
+        const packetIndex = this.receivedPacketCount++;
 
         const size = packet.length;
         const dataBuffer = Buffer.alloc(size);
 
-        this.decryptStateBuffer.writeInt32LE(Number(BigInt.asIntN(32, packetIndex)), 56);
+        this.stateBuffer.writeBigInt64LE(BigInt.asIntN(64, packetIndex | 0x8000000000000000n), 56);
 
         for (let i = 0; i < size; i += 64) {
-            this.decryptStateBuffer.writeInt32LE(i / 64, 48);
+            this.stateBuffer.writeInt32LE(i / 64, 48);
 
-            const chunkKey = chacha20(this.decryptStateArray);
+            const chunkKey = chacha20(this.stateArray);
 
             for (let j = 0; j < 64 && i + j < size; j++) {
                 if (i === 0 && j === 0 && packets && !packets.includes(packet[0] ^ chunkKey[0])) return false;
@@ -229,147 +172,120 @@ class ArrasProtocol {
     decode(packet) {
         const buffer = Buffer.from(packet.buffer);
         const output = [ String.fromCharCode(packet[0]) ];
-        for (let i = 1; i < packet.length; i++) {
-            const dataType = packet[i];
+        for (let i = 1; i < packet.length;) {
+            const header = packet[i++];
 
             switch (true) {
-                case dataType <= 0xbf:
-                    output.push(number(dataType));
+                case header <= 0x7f:
+                    output.push(header);
                     break;
-                case dataType >= 0xc0 && dataType <= 0xdf:
-                    output.push(string(decoder.decode(packet.slice(i + 1, i + 1 + dataType - 0xc0))));
-                    i += dataType - 0xc0;
+                case header <= 0xbf:
+                    output.push((header & 0x3f) - 64);
                     break;
-                case dataType >= 0xe0 && dataType <= 0xef:
-                    output.push(number(((dataType - 0xe0) << 8) | packet[i + 1], 12));
-                    i++;
+                case header <= 0xdf:
+                    output.push(decoder.decode(packet.subarray(i, i + (header & 0x1f))));
+                    i += header & 0x1f;
                     break;
-                case dataType >= 0xf0 && dataType < 0xf8:
-                    output.push(number(((dataType - 0xf0) << 16) | (packet[i + 1] << 8) | packet[i + 2], 19));
-                    i += 2;
+                case header < 0xfe:
+                    const intSize = header < 0xf0 ? 2 : 
+                                    header < 0xf8 ? 3 :
+                                    header < 0xfc ? 4 :
+                                    5;
+                    const headerBits = 6 - intSize;
+
+                    let number = header & ((1 << headerBits) - 1);
+                    if (number & (1 << (headerBits - 1))) {
+                        number -= 1 << headerBits;
+                    }
+
+                    for (let j = 0; j < intSize - 1; j++) {
+                        number = (number * 0x100) + packet[i + j];
+                    }
+
+                    output.push(number);
+                    i += intSize - 1;
                     break;
-                case dataType === 0xf8:
-                    output.push(number((packet[i + 1] << 16) | (packet[i + 2] << 8) | packet[i + 3], 25));
-                    i += 3;
-                    break;
-                case dataType === 0xf9:
-                    output.push(number(0x1000000 + ((packet[i + 1] << 16) | (packet[i + 2] << 8) | packet[i + 3]), 25));
-                    i += 3;
-                    break;
-                case dataType === 0xfc:
-                    output.push(number(buffer.readUint32BE(i + 1), 32));
-                    i += 4;
-                    break;
-                case dataType === 0xfe:
-                    let length = buffer.readUint16LE(i + 1);
+                case header === 0xfe:
+                    let length = buffer.readUint16LE(i);
                     i += 2;
                     if (length === 0) {
-                        length = buffer.readUint32LE(i + 1);
+                        length = buffer.readUint32LE(i);
                         i += 4;
                     }
-                    output.push(string(decoder.decode(packet.slice(i + 1, i + 1 + length))));
+                    output.push(decoder.decode(packet.subarray(i, i + length)));
                     i += length;
                     break;
-                case dataType === 0xff:
-                    output.push(float(buffer.readFloatLE(i + 1)));
+                case header === 0xff:
+                    output.push(buffer.readFloatLE(i));
                     i += 4;
                     break;
-                default:
-                    console.log(buffer.toString("hex"));
-                    console.log(dataType);
-                    console.log(i);
-                    throw "unknown packet code";
             }
         }
         return output;
     }
     encode(packet) {
-        const buffer = new GrowableBuffer(packet.length);
+        const buffer = new GrowableBuffer();
         buffer.write(packet[0]);
 
         for (let i = 1; i < packet.length; i++) {
             let data = packet[i];
             switch (typeof data) {
                 case "string":
-                    if (data.length >= 65536) {
-                        buffer.writeUint16(0xfe);
-                        buffer.writeUint8(0);
-                        buffer.writeUint32(data.length);
+                    const length = Buffer.byteLength(data);
+                    if (length < 0x20) {
+                        buffer.writeUint8(0xc0 | length);
                         buffer.write(data);
-                    } else if (data.length >= 32) {
+                    } else if (length < 0x10000) {
                         buffer.writeUint8(0xfe);
-                        buffer.writeUint16(data.length);
+                        buffer.writeUint16(length);
                         buffer.write(data);
                     } else {
-                        buffer.writeUint8(0xc0 + data.length);
+                        buffer.writeUint8(0xfe);
+                        buffer.writeUint16(0);
+                        buffer.writeUint32(length);
                         buffer.write(data);
                     }
                     break;
-                case "object":
-                    let number = data.value;
-                    if (Number.isInteger(number)) {
-                        if (data.unsigned) {
-                            if (number <= 191) buffer.writeUint8(number);
-                            else if (number < 2 ** 12) {
-                                buffer.writeUint8(0xe0 + (number >>> 8));
-                                buffer.writeUint8(number & 0xff);
-                            } else if (number < 2 ** 19) {
-                                buffer.writeUint8(0xf0 + (number >>> 16));
-                                buffer.writeUint8((number >>> 8) & 0xff);
-                                buffer.writeUint8(number & 0xff);
-                            } else if (number < 2 ** 24) {
-                                buffer.writeUint8(0xf8);
-                                buffer.writeUint8(number >>> 16);
-                                buffer.writeUint8((number >>> 8) & 0xff);
-                                buffer.writeUint8(number & 0xff);
-                            } else if (number < 2 ** 25) {
-                                buffer.writeUint8(0xf9);
-                                buffer.writeUint8((number >>> 16) & 0xff);
-                                buffer.writeUint8((number >>> 8) & 0xff);
-                                buffer.writeUint8(number & 0xff);
-                            } else if (number < 2 ** 32) {
-                                buffer.writeUint8(0xfc);
-                                buffer.writeUint8(number >>> 24);
-                                buffer.writeUint8((number >>> 16) & 0xff);
-                                buffer.writeUint8((number >>> 8) & 0xff);
-                                buffer.writeUint8(number & 0xff);
-                            } else throw "unknown packet number type";
-                        } else {
-                            if (number >= -95 && number <= 96) buffer.writeUint8(number >= 0 ? number : number + 192);
-                            else if (number >= -(2 ** 11) && number < 2 ** 11) {
-                                number = encodeSigned(number, 12);
-                                buffer.writeUint8(0xe0 + (number >>> 8));
-                                buffer.writeUint8(number & 0xff);
-                            } else if (number >= -(2 ** 18) && number < 2 ** 18) {
-                                number = encodeSigned(number, 19);
-                                buffer.writeUint8(0xf0 + (number >>> 16));
-                                buffer.writeUint8((number >>> 8) & 0xff);
-                                buffer.writeUint8(number & 0xff);
-                            } else if (number >= -(2 ** 24) && number < 2 ** 24) {
-                                number = encodeSigned(number, 25)
-                                buffer.writeUint8(number & 0x1000000 ? 0xf9 : 0xf8);
-                                buffer.writeUint8((number >>> 16) & 0xff);
-                                buffer.writeUint8((number >>> 8) & 0xff);
-                                buffer.writeUint8(number & 0xff);
-                            } else if (number >= -(2 ** 31) && number < 2 ** 31) {
-                                number = encodeSigned(number, 32);
-                                buffer.writeUint8(0xfc);
-                                buffer.writeUint8(number >>> 24);
-                                buffer.writeUint8((number >>> 16) & 0xff);
-                                buffer.writeUint8((number >>> 8) & 0xff);
-                                buffer.writeUint8(number & 0xff);
-                            } else throw "unknown packet number type";
-                        }
-                    } else {
+                case "number":
+                    if (!Number.isInteger(data)) {
                         buffer.writeUint8(0xff);
-                        buffer.writeFloat(number);
+                        buffer.writeFloat(data);
+                        break;
                     }
+                case "boolean":
+                    data = BigInt(data);
+                case "bigint":
+                    if (data >= 0n && data <= 127n) {
+                        buffer.writeUint8(Number(data));
+                        break;
+                    }
+                    if (data >= -64n && data < 0n) {
+                        buffer.writeUint8(Number(data & 0xbfn));
+                        break;
+                    }
+
+                    const a = data >= 0n ? data : ~data;
+                    const lz = clz64(a);
+                    const intSize = Math.floor((73 - lz) / 7);
+
+                    if (intSize < 2 || intSize > 5) throw "unencodable number";
+
+                    const prefix = (0xfffffe00 >>> ((intSize + 2) & 0x1f)) & 0xff;
+
+                    const bytes = Array(intSize);
+                    for (let j = intSize - 1; j > 0; j--) {
+                        bytes[j] = Number(data & 0xffn);
+                        data >>= 8n;
+                    }
+                    bytes[0] = prefix | Number(data & BigInt((1 << (6 - intSize)) - 1));
+
+                    for (const byte of bytes) buffer.writeUint8(byte);
                     break;
                 default:
                     throw "unknown packet data type";
             }
         }
-        return new Uint8Array(buffer.buffer.buffer);
+        return new Uint8Array(buffer.buffer);
     }
 }
 
@@ -437,7 +353,7 @@ const clientPackets = {
         // partyId: the party id of team to spawn into
         // flags: spawn settings (auto level up, incognito)
 
-        return ["s", name, partyId, unsigned(autoLevelUp | incognito << 1)];
+        return ["s", name, partyId, autoLevelUp | incognito << 1];
     },
     e (id, result) {
         // eval - eval result
@@ -466,7 +382,7 @@ const clientPackets = {
         // upgrade request - upgrades to a tank
         // index - the tank index in the upgrades
 
-        return ["U", unsigned(index)];
+        return ["U", index];
     },
     x (index, type = "add", value) {
         // skill upgrade request - upgrades a skill
@@ -476,11 +392,11 @@ const clientPackets = {
 
         switch (type) {
             case "add":
-                return ["x", unsigned(index), signed(-1)];
+                return ["x", index, -1];
             case "max":
-                return ["x", unsigned(index), signed(255)];
+                return ["x", index, 255];
             case "set":
-                return ["x", unsigned(index), signed(value)];
+                return ["x", index, value];
         }
     },
     C (x, y, { up, down, left, right, lmb, rmb } = {}) {
@@ -489,13 +405,13 @@ const clientPackets = {
         // y: tank target y
         // action: movement and shooting actions (up, down, left, right, lmb, rmb)
 
-        return ["C", signed(x), signed(y), unsigned(up | down << 1 | left << 2 | right << 3 | lmb << 4 | rmb << 6)];
+        return ["C", x, y, up | down << 1 | left << 2 | right << 3 | lmb << 4 | rmb << 6];
     },
     t (action) {
         // player toggle - toggles tank actions
         // action: tank action (autofire, autospin, override, reverse)
 
-        return ["t", unsigned(["autofire", "autospin", "override", "reverse"].indexOf(action))];
+        return ["t", ["autofire", "autospin", "override", "reverse"].indexOf(action)];
     },
     L () {
         // level up cheat - levels up the tank
@@ -508,7 +424,7 @@ const clientPackets = {
         // keyCode: the KeyboardEvent.prototype.code of a key press (use Self for the sandbox key `)
         // isKeyDown: true for keydown, false for keyup
 
-        return ["0", keyCode, unsigned(isKeyDown)];
+        return ["0", keyCode, isKeyDown];
     },
     M (message) {
         // chat messages - sends a chat message
@@ -522,7 +438,7 @@ const clientPackets = {
         // action: the action to perform on the player (promote, demote, kick)
         // playerId: the current socket id of the player
 
-        return ["P", unsigned(["promote", "demote", "kick"].indexOf(action)), unsigned(playerId)];
+        return ["P", ["promote", "demote", "kick"].indexOf(action), playerId];
     },
     K () {
         // suicide - kills the player body
@@ -544,20 +460,20 @@ const serverPackets = {
     R (packet) { // room
         let i = 0;
 
-        const info = Object.fromEntries(packet[i++].string.value.split(",").map(d => d.split("=")));
-        const roomX1 = packet[i++].number.signed;
-        const roomY1 = packet[i++].number.signed;
-        const roomX2 = packet[i++].number.signed;
-        const roomY2 = packet[i++].number.signed;
-        const unknown = packet[i++].string.value;
-        const tileWidth = packet[i++].number.unsigned;
-        const tileHeight = packet[i++].number.unsigned;
+        const info = Object.fromEntries(packet[i++].split(",").filter(d => d).map(d => d.split("=")));
+        const roomX1 = packet[i++];
+        const roomY1 = packet[i++];
+        const roomX2 = packet[i++];
+        const roomY2 = packet[i++];
+        const unknown = packet[i++];
+        const tileWidth = packet[i++];
+        const tileHeight = packet[i++];
         
         const tiles = Array(tileHeight).fill().map(() => Array(tileWidth));
 
         for (let y = 0; y < tileHeight; y++) {
             for (let x = 0; x < tileWidth; x++) {
-                tiles[y][x] = packet[i++].number.signed;
+                tiles[y][x] = packet[i++];
             }
         }
 
@@ -574,107 +490,107 @@ const serverPackets = {
         let i = 0;
 
         const output = {
-            bodyX: packet[i++].number.signed,
-            bodyY: packet[i++].number.signed,
-            bodyFov: packet[i++].number.unsigned,
+            bodyX: packet[i++],
+            bodyY: packet[i++],
+            bodyFov: packet[i++],
             dead: [],
             removed: [],
             changed: []
         };
         
-        const updateFlags = packet[i++].number.unsigned;
+        const updateFlags = packet[i++];
 
         if (updateFlags & (1 << 0)) {
-            output.mspt = packet[i++].number.unsigned;
+            output.mspt = packet[i++];
         }
         if (updateFlags & (1 << 1)) {
-            output.speed = packet[i++].number.unsigned;
+            output.speed = packet[i++];
         }
         if (updateFlags & (1 << 2)) {
-            output.mockupIndex = packet[i++].number.unsigned;
+            output.mockupIndex = packet[i++];
             i++;
         }
         if (updateFlags & (1 << 3)) {
-            output.color = packet[i++].number.signed;
-            output.id = packet[i++].number.unsigned;
+            output.color = packet[i++];
+            output.id = packet[i++];
         }
         if (updateFlags & (1 << 4)) {
-            output.score = packet[i++].number.unsigned;
+            output.score = packet[i++];
         }
         if (updateFlags & (1 << 5)) {
             output.kills = {
-                player: packet[i++].number.unsigned,
-                assist: packet[i++].number.unsigned,
-                boss: packet[i++].number.unsigned,
-                food: packet[i++].number.unsigned
+                player: packet[i++],
+                assist: packet[i++],
+                boss: packet[i++],
+                food: packet[i++]
             };
         }
         if (updateFlags & (1 << 6)) {
-            output.skillPoints = packet[i++].number.unsigned;
+            output.skillPoints = packet[i++];
         }
         if (updateFlags & (1 << 7)) {
             output.maxSkills = [];
             for (let j = 0; j < 10; j++) {
-                output.maxSkills.push(packet[i++].number.unsigned);
+                output.maxSkills.push(packet[i++]);
             }
         }
         if (updateFlags & (1 << 8)) {
             output.skills = [];
             for (let j = 0; j < 10; j++) {
-                output.skills.push(packet[i++].number.unsigned);
+                output.skills.push(packet[i++]);
             }
         }
         if (updateFlags & (1 << 9)) {
-            const upgradesLength = packet[i++].number.unsigned;
+            const upgradesLength = packet[i++];
             output.upgrades = [];
             for (let j = 0; j < upgradesLength; j++) {
-                output.upgrades.push(packet[i++].number.unsigned);
+                output.upgrades.push(packet[i++]);
             }
         }
         if (updateFlags & (1 << 10)) {
-            output.partyCode = packet[i++].string.value;
+            output.partyCode = packet[i++];
         }
         if (updateFlags & (1 << 11)) {
-            output.operatorLevel = packet[i++].number.unsigned;
+            output.operatorLevel = packet[i++];
         }
 
-        while (packet[i].number.signed !== -1) {
+        while (packet[i] !== -1) {
             output.dead.push({
-                id: packet[i++].number.unsigned
+                id: packet[i++]
             });
         }
         i++;
 
-        while (packet[i].number.signed !== -1) {
+        while (packet[i] !== -1) {
             output.removed.push({
-                id: packet[i++].number.unsigned
+                id: packet[i++]
             });
         }
         i++;
 
         function parseEntity() {
             const entity = {};
-            const entityFlags = packet[i++].number.unsigned;
+            const entityFlags = packet[i++];
 
             if (entityFlags & (1 << 0)) {
-                entity.deltaX = packet[i++].number.signed / 4;
-                entity.deltaY = packet[i++].number.signed / 4;
+                entity.deltaX = packet[i++] / 4;
+                entity.deltaY = packet[i++] / 4;
             }
             if (entityFlags & (1 << 1)) {
-                entity.deltaFacing = packet[i++].number.signed * Math.PI / 512;
+                entity.deltaFacing = packet[i++] * Math.PI / 512;
             }
             if (entityFlags & (1 << 2)) {
-                entity.mockupIndex = packet[i++].number.unsigned;
+                entity.mockupIndex = packet[i++];
             }
             if (entityFlags & (1 << 3)) {
                 entity.guns = {};
-                while (packet[i].number.signed !== -1) {
-                    const gunIndex = packet[i++].number.unsigned;
-                    const gunFlags = packet[i++].number.unsigned;
+                while (packet[i] !== -1) {
+                    const gunIndex = packet[i++];
+                    const gunFlags = packet[i++];
                     const gun = {};
 
-                    if (gunFlags & (1 << 0)) gun.time = packet[i++].number.unsigned;
-                    if (gunFlags & (1 << 1)) gun.power = packet[i++].number.unsigned;
+                    if (gunFlags & (1 << 0)) gun.time = packet[i++];
+                    if (gunFlags & (1 << 1)) gun.power = packet[i++];
 
                     entity.guns[gunIndex] = gun;
                 }
@@ -682,15 +598,15 @@ const serverPackets = {
             }
             if (entityFlags & (1 << 4)) {
                 entity.turrets = {};
-                while (packet[i].number.signed !== -1) {
-                    const turretIndex = packet[i++].number.unsigned;
+                while (packet[i] !== -1) {
+                    const turretIndex = packet[i++];
 
                     entity.turrets[turretIndex] = parseEntity();
                 }
                 i++;
             }
             if (entityFlags & (1 << 5)) {
-                const entityDataFlags = packet[i++].number.unsigned;
+                const entityDataFlags = packet[i++];
                 entity.autoSpin = Boolean(entityDataFlags & (1 << 0));
                 entity.reverseTank = Boolean(entityDataFlags & (1 << 1));
                 const unknown1 = Boolean(entityDataFlags & (1 << 2));
@@ -699,35 +615,35 @@ const serverPackets = {
                 const unknown2 = Boolean(entityDataFlags & (1 << 5));
             }
             if (entityFlags & (1 << 6)) {
-                entity.health = packet[i++].number.unsigned / 255;
+                entity.health = packet[i++] / 255;
             }
             if (entityFlags & (1 << 7)) {
-                entity.shield = packet[i++].number.unsigned / 255;
+                entity.shield = packet[i++] / 255;
             }
             if (entityFlags & (1 << 8)) {
-                entity.alpha = packet[i++].number.unsigned / 255;
+                entity.alpha = packet[i++] / 255;
             }
             if (entityFlags & (1 << 9)) {
-                entity.size = packet[i++].number.unsigned  * 0.0625;
+                entity.size = packet[i++]  * 0.0625;
             }
             if (entityFlags & (1 << 10)) {
-                entity.score = packet[i++].number.unsigned;
+                entity.score = packet[i++];
             }
             if (entityFlags & (1 << 11)) {
-                entity.name = packet[i++].string.value;
+                entity.name = packet[i++];
             }
             if (entityFlags & (1 << 12)) {
-                entity.color = packet[i++].number.signed;
+                entity.color = packet[i++];
             }
             if (entityFlags & (1 << 13)) {
-                entity.layer = packet[i++].number.signed;
+                entity.layer = packet[i++];
             }
 
             return entity;
         }
 
-        while (i < packet.length - 1) {
-            const id = packet[i++].number.unsigned;
+        while (packet[i] !== -1) {
+            const id = packet[i++];
             const entity = parseEntity();
             entity.id = id;
             output.changed.push(entity);
@@ -737,7 +653,7 @@ const serverPackets = {
     },
     w (packet) { // welcome
         return {
-            playerId: packet[0].string.value
+            playerId: packet[0]
         };
     },
     P (packet) { // player list
@@ -746,19 +662,19 @@ const serverPackets = {
 
         let i = 0;
 
-        const removedLength = packet[i++].number.unsigned;
+        const removedLength = packet[i++];
         for (let j = 0; j < removedLength; j++) {
             removed.push({
-                socketId: packet[i++].number.unsigned
+                socketId: packet[i++]
             });
         }
 
-        const changedLength = packet[i++].number.unsigned;
+        const changedLength = packet[i++];
         for (let j = 0; j < changedLength; j++) {
-            const socketId = packet[i++].number.unsigned;
-            const flag = packet[i++].number.unsigned;
-            const name = packet[i++].string.value;
-            const mockupIndex = packet[i++].number.signed;
+            const socketId = packet[i++];
+            const flag = packet[i++];
+            const name = packet[i++];
+            const mockupIndex = packet[i++];
 
             changed.push({
                 socketId: socketId,
@@ -773,70 +689,70 @@ const serverPackets = {
     },
     m (packet) { // message
         return {
-            message: packet[0].string.value
+            message: packet[0]
         };
     },
     J (packet) { // mockups
         const output = {};
 
         let i = 0;
-        const length = packet[i++].number.unsigned;
+        const length = packet[i++];
 
         for (let j = 0; j < length; j++) {
             const mockup = {};
-            mockup.mockupIndex = packet[i++].number.unsigned;
+            mockup.mockupIndex = packet[i++];
 
-            mockup.name = packet[i++].string.value;
-            mockup.scoreText = packet[i++].string.value;
-            mockup.color = packet[i++].number.signed;
+            mockup.name = packet[i++];
+            mockup.scoreText = packet[i++];
+            mockup.color = packet[i++];
 
-            mockup.shape = packet[i++].number.signed;
+            mockup.shape = packet[i++];
             if (mockup.shape === 0x800) {
-                const pathLength = packet[i++].number.unsigned;
+                const pathLength = packet[i++];
                 mockup.shape = [];
                 for (let k = 0; k < pathLength; k++) {
-                    mockup.shape.push([packet[i++].number.signed, packet[i++].number.signed]);
+                    mockup.shape.push([packet[i++], packet[i++]]);
                 }
             }
 
-            mockup.entityType = packet[i++].number.unsigned;
-            mockup.shootsType = packet[i++].number.unsigned;
+            mockup.entityType = packet[i++];
+            mockup.shootsType = packet[i++];
 
-            mockup.offset = packet[i++].number.signed;
-            mockup.size = packet[i++].number.signed;
+            mockup.offset = packet[i++];
+            mockup.size = packet[i++];
 
-            const upgradesLength = packet[i++].number.unsigned;
+            const upgradesLength = packet[i++];
             mockup.upgrades = [];
             for (let k = 0; k < upgradesLength; k++) {
                 mockup.upgrades.push({
-                    tier: packet[i++].number.unsigned,
-                    mockupIndex: packet[i++].number.unsigned
+                    tier: packet[i++],
+                    mockupIndex: packet[i++]
                 });
             }
 
-            const gunsLength = packet[i++].number.unsigned;
+            const gunsLength = packet[i++];
             mockup.guns = [];
             for (let k = 0; k < gunsLength; k++) {
                 mockup.guns.push({
-                    x: packet[i++].number.signed,
-                    y: packet[i++].number.signed,
-                    length: packet[i++].number.signed,
-                    width: packet[i++].number.signed,
-                    aspect: packet[i++].number.signed,
-                    angle: packet[i++].number.signed
+                    x: packet[i++],
+                    y: packet[i++],
+                    length: packet[i++],
+                    width: packet[i++],
+                    aspect: packet[i++],
+                    angle: packet[i++]
                 });
             }
 
-            const turretsLength = packet[i++].number.unsigned;
+            const turretsLength = packet[i++];
             mockup.turrets = [];
             for (let k = 0; k < turretsLength; k++) {
                 mockup.turrets.push({
-                    mockupIndex: packet[i++].number.unsigned,
-                    scale: packet[i++].number.signed,
-                    offset: packet[i++].number.signed,
-                    direction: packet[i++].number.signed,
-                    renderOnTop: packet[i++].number.bool,
-                    angle: packet[i++].number.signed
+                    mockupIndex: packet[i++],
+                    scale: packet[i++],
+                    offset: packet[i++],
+                    direction: packet[i++],
+                    renderOnTop: packet[i++],
+                    angle: packet[i++]
                 });
             }
 
@@ -846,19 +762,19 @@ const serverPackets = {
     },
     C (packet) { // proof of work
         return {
-            input: packet[0].string.value
+            input: packet[0]
         };
     },
     e (packet) { // eval
         return {
-            id: packet[0].string.value,
-            code: packet[1].string.value
+            id: packet[0],
+            code: packet[1]
         };
     },
     G (packet) { // turnstile request
         return {
-            id: packet[0].string.value,
-            siteKey: packet[1].string.value
+            id: packet[0],
+            siteKey: packet[1]
         };
     },
     p () { // ping
@@ -874,70 +790,58 @@ const serverPackets = {
 
         let i = 0;
 
-        let minimapRemovedLength = packet[i++].number;
-        if (minimapRemovedLength.signed === -1) minimapRemovedLength = minimapRemovedLength.signed;
-        else minimapRemovedLength = minimapRemovedLength.unsigned;
+        const minimapRemovedLength = packet[i++];
         for (let j = 0; j < minimapRemovedLength; j++) {
             minimapRemoved.push({
-                id: packet[i++].number.unsigned
+                id: packet[i++]
             });
         }
 
-        let minimapChangedLength = packet[i++].number;
-        if (minimapChangedLength.signed === -1) minimapChangedLength = minimapChangedLength.signed;
-        else minimapChangedLength = minimapChangedLength.unsigned;
+        const minimapChangedLength = packet[i++];
         for (let j = 0; j < minimapChangedLength; j++) {
             minimapChanged.push({
-                id: packet[i++].number.unsigned,
-                type: packet[i++].number.unsigned,
-                x: packet[i++].number.signed / 255,
-                y: packet[i++].number.signed / 255,
-                color: packet[i++].number.signed,
-                size: packet[i++].number.unsigned
+                id: packet[i++],
+                type: packet[i++],
+                x: packet[i++] / 255,
+                y: packet[i++] / 255,
+                color: packet[i++],
+                size: packet[i++]
             });
         }
 
-        let teamMinimapRemovedLength = packet[i++].number;
-        if (teamMinimapRemovedLength.signed === -1) teamMinimapRemovedLength = teamMinimapRemovedLength.signed;
-        else teamMinimapRemovedLength = teamMinimapRemovedLength.unsigned;
+        const teamMinimapRemovedLength = packet[i++];
         for (let j = 0; j < teamMinimapRemovedLength; j++) {
             teamMinimapRemoved.push({
-                id: packet[i++].number.unsigned
+                id: packet[i++]
             });
         }
 
-        let teamMinimapChangedLength = packet[i++].number;
-        if (teamMinimapChangedLength.signed === -1) teamMinimapChangedLength = teamMinimapChangedLength.signed;
-        else teamMinimapChangedLength = teamMinimapChangedLength.unsigned;
+        const teamMinimapChangedLength = packet[i++];
         for (let j = 0; j < teamMinimapChangedLength; j++) {
             teamMinimapChanged.push({
-                id: packet[i++].number.unsigned,
-                x: packet[i++].number.signed / 255,
-                y: packet[i++].number.signed / 255,
-                color: packet[i++].number.signed
+                id: packet[i++],
+                x: packet[i++] / 255,
+                y: packet[i++] / 255,
+                color: packet[i++]
             });
         }
 
-        let leaderboardRemovedLength = packet[i++].number;
-        if (leaderboardRemovedLength.signed === -1) leaderboardRemovedLength = leaderboardRemovedLength.signed;
-        else leaderboardRemovedLength = leaderboardRemovedLength.unsigned;
+        const leaderboardRemovedLength = packet[i++];
         for (let j = 0; j < leaderboardRemovedLength; j++) {
             leaderboardRemoved.push({
-                id: packet[i++].number.unsigned
+                id: packet[i++]
             });
         }
 
-        let leaderboardChangedLength = packet[i++].number;
-        if (leaderboardChangedLength.signed === -1) leaderboardChangedLength = leaderboardChangedLength.signed;
-        else leaderboardChangedLength = leaderboardChangedLength.unsigned;
+        const leaderboardChangedLength = packet[i++];
         for (let j = 0; j < leaderboardChangedLength; j++) {
             leaderboardChanged.push({
-                id: packet[i++].number.unsigned,
-                score: packet[i++].number.unsigned,
-                mockupIndex: packet[i++].number.unsigned,
-                name: packet[i++].string.value,
-                color: packet[i++].number.signed,
-                barColor: packet[i++].number.signed
+                id: packet[i++],
+                score: packet[i++],
+                mockupIndex: packet[i++],
+                name: packet[i++],
+                color: packet[i++],
+                barColor: packet[i++]
             });
         }
 
@@ -945,36 +849,36 @@ const serverPackets = {
     },
     c (packet) { // camera
         return {
-            bodyX: packet[0].number.signed,
-            bodyY: packet[1].number.signed,
-            bodyFov: packet[2].number.unsigned
+            bodyX: packet[0],
+            bodyY: packet[1],
+            bodyFov: packet[2]
         };
     },
     M (packet) { // chat message
         return {
-            entityId: packet[0].number.unsigned,
-            message: packet[1].string.value,
-            isGlobal: packet[2].number.bool
+            entityId: packet[0],
+            message: packet[1],
+            isGlobal: packet[2]
         };
     },
     K (packet) { // kick
         return {
-            reason: packet[0].string.value
+            reason: packet[0]
         };
     },
     F (packet) { // death
         let i = 0;
 
-        const time = packet[i++].number.unsigned;
-        const score = packet[i++].number.unsigned;
-        const timeAlive = packet[i++].number.unsigned;
+        const time = packet[i++];
+        const score = packet[i++];
+        const timeAlive = packet[i++];
 
-        const playerKills = packet[i++].number.unsigned;
-        const assistKills = packet[i++].number.unsigned;
-        const bossKills = packet[i++].number.unsigned;
-        const foodKills = packet[i++].number.unsigned;
+        const playerKills = packet[i++];
+        const assistKills = packet[i++];
+        const bossKills = packet[i++];
+        const foodKills = packet[i++];
 
-        const killType = packet[i++].number.unsigned;
+        const killType = packet[i++];
         const killInfo = {};
         switch (killType) {
             case 1:
@@ -986,21 +890,21 @@ const serverPackets = {
                 break;
         }
 
-        const deathType = packet[i++].number.unsigned;
+        const deathType = packet[i++];
         
         const killers = [];
-        const killersLength = deathType === 0 ? packet[i++].number.unsigned : 0;
+        const killersLength = deathType === 0 ? packet[i++] : 0;
         for (let k = 0; k < killersLength; k++) {
             killers.push({
-                name: packet[i++].string.value,
-                tank: packet[i++].string.value
+                name: packet[i++],
+                tank: packet[i++]
             });
         }
 
-        const serverActivity = packet[i++].number.unsigned;
-        const serversTraveled = packet[i++].number.unsigned;
-        const respawnTime = packet[i++].number.unsigned;
-        const saveCode = packet[i++].string.value;
+        const serverActivity = packet[i++];
+        const serversTraveled = packet[i++];
+        const respawnTime = packet[i++];
+        const saveCode = packet[i++];
 
         return {
             time,
@@ -1026,13 +930,13 @@ const serverPackets = {
     },
     r (packet) { // server travel
         return {
-            server: packet[0].string.value,
-            travelToken: packet[1].string.value
+            server: packet[0],
+            travelToken: packet[1]
         };
     },
     k (packet) { // key
         return {
-            playerToken: packet[0].string.value
+            playerToken: packet[0]
         };
     }
 };
