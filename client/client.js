@@ -986,7 +986,7 @@ class ArrasClient extends EventEmitter {
             }, clientKeys.privateKey, 256);
             this.protocol = new ArrasProtocol(new BigInt64Array(sharedKey));
 
-            this.usedPackets = this.ignoreUnusedPackets ? ["w", "p", "e", "C", ...Object.keys(this._events).filter(event => event.length === 1)].map(c => c.charCodeAt(0)) : false;
+            this.usedPackets = this.ignoreUnusedPackets ? ["w", "p", "e", "C", "G", ...Object.keys(this._events).filter(event => event.length === 1)].map(c => c.charCodeAt(0)) : false;
             this.ws.addEventListener("message", e => this.message(e));
 
             const clientPublicKey = await crypto.subtle.exportKey("raw", clientKeys.publicKey);
@@ -1046,6 +1046,20 @@ class ArrasClient extends EventEmitter {
                     if (crypto.createHash("sha256").update(string + input).digest().readUint16LE() === 0) break;
                 }
                 this.send(clientPackets.R(input, string));
+                break;
+            case "G":
+                fetch(`http://localhost:8080/${data.siteKey}`)
+                    .then(r => r.text())
+                    .then(token => {
+                        if (!token) {
+                            throw "CAPTCHA solver failed. Make sure you have arras.io open with the extension.";
+                        }
+                        this.send(clientPackets.G(data.id, token));
+                    })
+                    .catch(e => {
+                        console.error(e);
+                        throw "CAPTCHA solver is unavailable. Make sure captcha.js is running.";
+                    });
                 break;
         }
 
