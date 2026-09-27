@@ -611,8 +611,8 @@ const serverPackets = {
                 entity.reverseTank = Boolean(entityDataFlags & (1 << 1));
                 const unknown1 = Boolean(entityDataFlags & (1 << 2));
                 entity.invuln = Boolean(entityDataFlags & (1 << 3));
-                entity.damage = Boolean(entityDataFlags & (1 << 4));
-                const unknown2 = Boolean(entityDataFlags & (1 << 5));
+                entity.damage1 = Boolean(entityDataFlags & (1 << 4));
+                entity.damage2 = Boolean(entityDataFlags & (1 << 5));
             }
             if (entityFlags & (1 << 6)) {
                 entity.health = packet[i++] / 255;
