@@ -1,5 +1,5 @@
 const { ArrasClient, clientPackets } = require("../client");
-const { Client, IntentsBitField, Message } = require("discord.js");
+const { Client, IntentsBitField } = require("discord.js");
 
 const DISCORD_TOKEN = "CHANGE_THIS";
 const CHANNEL_ID = "CHANGE_THIS";
