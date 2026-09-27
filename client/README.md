@@ -6,7 +6,7 @@ Following the introduction of CAPTCHAs in arras, bots can't join normally anymor
 The client includes the recommended way to deal with CAPTCHAs, but you're welcome to replace it with a solver API.
 
 1. Install the [Tampermonkey](https://www.tampermonkey.net/#download) extension for your browser.
-2. Add `userscript.js` to Tampermonkey.
+2. Install [this](https://greasyfork.org/scripts/597692) userscript.
 3. Install [Node.js](https://nodejs.org/en/download/current).
 4. Run `npm i ws` in the terminal.
 5. Run `node captcha` in the terminal.
