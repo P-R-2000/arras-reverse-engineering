@@ -20,11 +20,13 @@ You can edit these packets by making the listener return a value:
 - modify the packet: return the new packet
     ```js
     // Always enables blackout mode
-    arras.server.on("M", p => {
+    arras.server.on("R", p => {
         p.info.blackout = true;
         return p;
     });
     ```
+
+
 You can send new packets by using `arras.server.send` or `arras.client.send`.
 ```js
 // Sends a notification when you attempt to chat
@@ -32,3 +34,4 @@ arras.client.on("M", p => {
     arras.server.send("m", { message: "You can't send messages while muted!" });
     return false;
 });
+```
