@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arras.io FOV changer and removed entities viewer
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  Lets you change your FOV and see removed entities in arras.io
 // @author       pr2000
 // @match        https://arras.io/
@@ -14,7 +14,7 @@
 let fov = 1386;
 
 window.addEventListener("wheel", e => {
-    fov += fov * e.deltaY / 1000;
+    fov = Math.min(Math.max(fov + fov * e.deltaY / 1000, 0.1), 10000000);
 });
 
 arras.server.on("c", p => {
