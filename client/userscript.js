@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         Arras CAPTCHA Solver
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  Solves arras CAPTCHAs upon node.js client request
 // @author       pr2000
 // @match        https://arras.io/
+// @match        https://arrax.io/
+// @match        https://arras.netlify.app/
 // @icon         https://arras.io/favicon/64x64.png
 // @grant        none
 // ==/UserScript==
