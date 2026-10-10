@@ -1,5 +1,6 @@
 # Packet Hook Script
 This Tampermonkey script allows you to read, edit and send packets using the arras.io browser client.
+You can download it [here](https://greasyfork.org/scripts/599561).
 You can interact with its API by making new userscripts.
 There are some examples on how to use this script in the `examples/` directory.
 
