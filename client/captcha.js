@@ -1,20 +1,15 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
 
-const tokens = new Map();
-const requests = new Map();
+const requests = [];
 let socket;
 
 const server = http.createServer((req, res) => {
     const siteKey = req.url.slice(1);
     if (!siteKey) return res.end();
-    if (tokens.has(siteKey)) return res.end(tokens.get(siteKey));
 
     if (socket) socket.send(siteKey);
-    if (!requests.has(siteKey)) requests.set(siteKey, []);
-    requests.get(siteKey).push(token => {
-        res.end(token);
-    });
+    requests.push([siteKey, token => res.end(token)]);
 }).listen(8080, () => console.log("Waiting for client connection."));
 
 const wss = new WebSocketServer({ server });
@@ -34,14 +29,13 @@ wss.on("connection", ws => {
     });
     socket.addEventListener("message", e => {
         const [siteKey, token] = e.data.split("|");
-        tokens.set(siteKey, token);
-        setTimeout(() => {
-            tokens.delete(siteKey);
-        }, 4.5 * 60 * 1000);
-        if (requests.has(siteKey)) {
-            const req = requests.get(siteKey);
-            for (const r of req) r(token);
-            requests.delete(siteKey);
+        for (let i = 0; i < requests.length; i++) {
+            const request = requests[i];
+            if (request[0] === siteKey) {
+                requests.splice(i, 1);
+                request[1](token);
+                break;
+            }
         }
 
         console.log("Received token for", siteKey);
@@ -49,7 +43,7 @@ wss.on("connection", ws => {
 
     console.log("Client connected.");
 
-    for (const siteKey of requests.keys()) {
+    for (const [siteKey] of requests) {
         socket.send(siteKey);
     }
 });
