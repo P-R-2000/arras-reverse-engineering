@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         Arras Packet Hook
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  Allows hooking of arras.io packets
 // @author       pr2000
 // @match        https://arras.io/
 // @match        https://arrax.io/
 // @match        https://arras.netlify.app/
+// @match        https://arras.pages.dev/
+// @match        https://arras-wwii.pages.dev/
 // @icon         https://arras.io/favicon/64x64.png
 // @grant        none
 // @run-at       document-start
@@ -28,7 +30,7 @@ WebAssembly.instantiate = async function (module, imports) {
 }
 
 const log = console.log;
-console.log = function(...logs) {
+console.log = function (...logs) {
     if (memory) {
         console.log = log;
     } else if (new Error().stack.includes("wasm")) {
@@ -72,25 +74,30 @@ window.arras = {
 
 class GrowableBuffer {
     constructor() {
-        this.buffer = new ArrayBuffer(0, { maxByteLength: 2 ** 32 });
+        this.buffer = new ArrayBuffer(2 ** 6, { maxByteLength: 2 ** 32 });
         this.view = new DataView(this.buffer);
         this.array = new Uint8Array(this.buffer);
         this.offset = 0;
     }
     check(size) {
         if (this.buffer.byteLength - this.offset < size) {
-            this.buffer.resize(this.offset + size);
+            this.buffer.resize((this.offset + size) * 2);
         }
+    }
+    set(data) {
+        this.check(data.length);
+        this.array.set(data, this.offset)
+        this.offset += data.byteLength;
     }
     write(data) {
         const array = encoder.encode(data);
-        this.check(array.byteLength);
+        this.check(array.length);
         this.array.set(array, this.offset)
-        this.offset += array.byteLength;
+        this.offset += array.length;
     }
     writeUint8(data) {
         this.check(1);
-        this.view.setUint8(this.offset, data);
+        this.array[this.offset] = data;
         this.offset += 1;
     }
     writeUint16(data) {
@@ -246,23 +253,20 @@ class ArrasProtocol {
                     i += header & 0x1f;
                     break;
                 case header < 0xfe:
-                    const intSize = header < 0xf0 ? 2 :
-                        header < 0xf8 ? 3 :
-                            header < 0xfc ? 4 :
-                                5;
-                    const headerBits = 6 - intSize;
-
-                    let number = header & ((1 << headerBits) - 1);
-                    if (number & (1 << (headerBits - 1))) {
-                        number -= 1 << headerBits;
+                    if (header < 0xf0) {
+                        output.push(((header << 28) >> 20) | packet[i]);
+                        i += 1;
+                    } else if (header < 0xf8) {
+                        output.push(((header << 29) >> 13) | (packet[i] << 8) | packet[i + 1]);
+                        i += 2;
+                    } else if (header < 0xfc) {
+                        output.push(((header << 30) >> 6) | (packet[i] << 16) | (packet[i + 1] << 8) | packet[i + 2]);
+                        i += 3;
+                    } else {
+                        const low32 = ((packet[i] << 24) | (packet[i + 1] << 16) | (packet[i + 2] << 8) | packet[i + 3]) >>> 0;
+                        output.push((header & 1) ? low32 - 0x100000000 : low32);
+                        i += 4;
                     }
-
-                    for (let j = 0; j < intSize - 1; j++) {
-                        number = (number * 0x100) + packet[i + j];
-                    }
-
-                    output.push(number);
-                    i += intSize - 1;
                     break;
                 case header === 0xfe:
                     let length = view.getUint16(i, true);
@@ -290,21 +294,27 @@ class ArrasProtocol {
             let data = packet[i];
             switch (typeof data) {
                 case "string":
-                    const length = encoder.encode(data).length;
-                    if (length < 0x20) {
+                    const str = encoder.encode(data);
+                    const length = str.length;
+                    if (length < 2 ** 5) {
                         buffer.writeUint8(0xc0 | length);
-                        buffer.write(data);
-                    } else if (length < 0x10000) {
+                        buffer.set(str);
+                    } else if (length < 2 ** 16) {
                         buffer.writeUint8(0xfe);
                         buffer.writeUint16(length);
-                        buffer.write(data);
-                    } else {
+                        buffer.set(str);
+                    } else if (length < 2 ** 32) {
                         buffer.writeUint8(0xfe);
                         buffer.writeUint16(0);
                         buffer.writeUint32(length);
-                        buffer.write(data);
+                        buffer.set(str);
+                    } else {
+                        console.log(data);
+                        throw "unencodable string";
                     }
                     break;
+                case "bigint":
+                    data = Number(data);
                 case "number":
                     if (!Number.isInteger(data)) {
                         buffer.writeUint8(0xff);
@@ -312,41 +322,54 @@ class ArrasProtocol {
                         break;
                     }
                 case "boolean":
-                    data = BigInt(data);
-                case "bigint":
-                    if (data >= 0n && data <= 127n) {
-                        buffer.writeUint8(Number(data));
-                        break;
+                    if (data >= 0 && data <= 127) {
+                        buffer.writeUint8(data);
+                    } else if (data >= -64 && data < 0) {
+                        buffer.writeUint8(data & 0xbf);
+                    } else if (data >= -2048 && data <= 2047) {
+                        buffer.writeUint8(0xe0 | ((data >> 8) & 0x0f));
+                        buffer.writeUint8(data & 0xff);
+                    } else if (data >= -262144 && data <= 262143) {
+                        buffer.writeUint8(0xf0 | ((data >> 16) & 0x07));
+                        buffer.writeUint8((data >> 8) & 0xff);
+                        buffer.writeUint8(data & 0xff);
+                    } else if (data >= -33554432 && data <= 33554431) {
+                        buffer.writeUint8(0xf8 | ((data >> 24) & 0x03));
+                        buffer.writeUint8((data >> 16) & 0xff);
+                        buffer.writeUint8((data >> 8) & 0xff);
+                        buffer.writeUint8(data & 0xff);
+                    } else if (data >= -4294967296 && data <= 4294967295) {
+                        buffer.writeUint8(data < 0 ? 0xfd : 0xfc);
+                        buffer.writeUint8((data >>> 24) & 0xff);
+                        buffer.writeUint8((data >>> 16) & 0xff);
+                        buffer.writeUint8((data >>> 8) & 0xff);
+                        buffer.writeUint8(data & 0xff);
+                    } else {
+                        buffer.writeUint8(0xff);
+                        buffer.writeFloat(data);
                     }
-                    if (data >= -64n && data < 0n) {
-                        buffer.writeUint8(Number(data & 0xbfn));
-                        break;
-                    }
-
-                    const a = data >= 0n ? data : ~data;
-                    const lz = clz64(a);
-                    const intSize = Math.floor((73 - lz) / 7);
-
-                    if (intSize < 2 || intSize > 5) throw "unencodable number";
-
-                    const prefix = (0xfffffe00 >>> ((intSize + 2) & 0x1f)) & 0xff;
-
-                    const bytes = Array(intSize);
-                    for (let j = intSize - 1; j > 0; j--) {
-                        bytes[j] = Number(data & 0xffn);
-                        data >>= 8n;
-                    }
-                    bytes[0] = prefix | Number(data & BigInt((1 << (6 - intSize)) - 1));
-
-                    for (const byte of bytes) buffer.writeUint8(byte);
                     break;
                 default:
                     console.log(packet, data, i);
                     throw "unknown packet data type";
             }
         }
-        return new Uint8Array(buffer.buffer);
+        return buffer.array.subarray(0, buffer.offset);
     }
+}
+
+function serializeColor(color) {
+    if (typeof color === "string") {
+        return 1 << 24 | parseInt(color.slice(1), 16);
+    }
+    return color;
+}
+
+function deserializeColor(color) {
+    if (color & 1 << 24) {
+        return `#${(color ^ 1 << 24).toString(16).padStart(6, "0")}`;
+    }
+    return color;
 }
 
 const clientPackets = {
@@ -457,8 +480,8 @@ const clientPackets = {
         }
     },
     C: {
-        serialize({ x, y, up, down, left, right, lmb, rmb }) {
-            return ["C", x, y, up | down << 1 | left << 2 | right << 3 | lmb << 4 | rmb << 6];
+        serialize({ x, y, up, down, left, right, lmb, rmb, mmb, scope }) {
+            return ["C", x, y, up | down << 1 | left << 2 | right << 3 | lmb << 4 | rmb << 5 | mmb << 6 | scope << 7];
         },
         deserialize(packet) {
             return {
@@ -469,17 +492,19 @@ const clientPackets = {
                 left: Boolean(packet[2] & 0b100),
                 right: Boolean(packet[2] & 0b1000),
                 lmb: Boolean(packet[2] & 0b10000),
-                rmb: Boolean(packet[2] & 0b1000000)
+                rmb: Boolean(packet[2] & 0b100000),
+                mmb: Boolean(packet[2] & 0b1000000),
+                scope: Boolean(packet[2] & 0b10000000)
             };
         }
     },
     t: {
         serialize({ action }) {
-            return ["t", ["autofire", "autospin", "override", "reverse"].indexOf(action)];
+            return ["t", ["autofire", "autospin", "override", "reverseTank", "reverseMouse"].indexOf(action)];
         },
         deserialize(packet) {
             return {
-                action: ["autofire", "autospin", "override", "reverse"][packet[0]]
+                action: ["autofire", "autospin", "override", "reverseTank", "reverseMouse"][packet[0]]
             };
         }
     },
@@ -513,14 +538,24 @@ const clientPackets = {
         }
     },
     P: {
-        serialize({ action, playerId }) {
-            return ["P", ["promote", "demote", "kick"].indexOf(action), playerId];
+        serialize({ action, socketId }) {
+            return ["P", ["promote", "demote", "kick"].indexOf(action), socketId];
         },
         deserialize(packet) {
             return {
                 action: ["promote", "demote", "kick"][packet[0]],
-                playerId: packet[1]
+                socketId: packet[1]
             };
+        }
+    },
+    r: {
+        serialize({ socketId }) {
+            return ["r", socketId];
+        },
+        deserialize(packet) {
+            return {
+                socketId: packet[0]
+            }
         }
     },
     K: {
@@ -559,26 +594,35 @@ const clientPackets = {
 
 const serverPackets = {
     R: {
-        serialize({ info, roomX1, roomY1, roomX2, roomY2, unknown, tiles }) {
-            return ["R", Object.entries(info).map(d => d.join("=")).join(","), roomX1, roomY1, roomX2, roomY2, unknown, tiles[0].length, tiles.length, ...tiles.flat()];
+        serialize({ info, short, roomX1, roomY1, roomX2, roomY2, unknown, tiles }) {
+            if (short) return ["R", [...Object.entries(info).map(d => d.join("=")), "end"].join(",")];
+            return ["R", Object.entries(info).map(d => d.join("=")).join(","), roomX1, roomY1, roomX2, roomY2, unknown, tiles[0].length, tiles.length, ...tiles.flat().map(color => serializeColor(color))];
         },
         deserialize(packet) {
             let i = 0;
 
-            const info = Object.fromEntries(packet[i++].split(",").filter(d => d).map(d => d.split("=")));
+            const info = Object.fromEntries(packet[i++].split(",").filter(d => d).map(d => [...d.split("="), true]));
+            if (info.end) {
+                delete info.end;
+                return {
+                    info,
+                    short: true
+                }
+            }
+
             const roomX1 = packet[i++];
             const roomY1 = packet[i++];
             const roomX2 = packet[i++];
             const roomY2 = packet[i++];
             const unknown = packet[i++];
-            const tileWidth = packet[i++];
-            const tileHeight = packet[i++];
+            const tilesWidth = packet[i++];
+            const tilesHeight = packet[i++];
 
-            const tiles = Array(tileHeight).fill().map(() => Array(tileWidth));
+            const tiles = Array(tilesHeight).fill().map(() => Array(tilesWidth));
 
-            for (let y = 0; y < tileHeight; y++) {
-                for (let x = 0; x < tileWidth; x++) {
-                    tiles[y][x] = packet[i++];
+            for (let y = 0; y < tilesHeight; y++) {
+                for (let x = 0; x < tilesWidth; x++) {
+                    tiles[y][x] = deserializeColor(packet[i++]);
                 }
             }
 
@@ -617,7 +661,7 @@ const serverPackets = {
             }
             if (color != null && id != null) {
                 packet[4] |= (1 << 3);
-                packet.push(color, id);
+                packet.push(serializeColor(color), id);
             }
             if (score != null) {
                 packet[4] |= (1 << 4);
@@ -708,9 +752,9 @@ const serverPackets = {
                     }
                     packet.push(-1);
                 }
-                if (entity.twiggle != null && entity.reverse != null && entity.unknown != null && entity.invuln != null && entity.damage1 != null && entity.damage2 != null) {
+                if (entity.twiggle != null && entity.reverse != null && entity.drawHealth != null && entity.invuln != null && entity.damage1 != null && entity.damage2 != null) {
                     packet[i] |= 1 << 5;
-                    packet.push(entity.twiggle | entity.reverse << 1 | entity.unknown << 2 | entity.invuln << 3 | entity.damage1 << 4 | entity.damage2 << 5);
+                    packet.push(entity.twiggle | entity.reverse << 1 | entity.drawHealth << 2 | entity.invuln << 3 | entity.damage1 << 4 | entity.damage2 << 5);
                 }
                 if (entity.health != null) {
                     packet[i] |= 1 << 6;
@@ -738,7 +782,7 @@ const serverPackets = {
                 }
                 if (entity.color != null) {
                     packet[i] |= 1 << 12;
-                    packet.push(entity.color);
+                    packet.push(serializeColor(entity.color));
                 }
                 if (entity.layer != null) {
                     packet[i] |= 1 << 13;
@@ -779,7 +823,7 @@ const serverPackets = {
                 output.treeMockupIndex = packet[i++];
             }
             if (updateFlags & (1 << 3)) {
-                output.color = packet[i++];
+                output.color = deserializeColor(packet[i++]);
                 output.id = packet[i++];
             }
             if (updateFlags & (1 << 4)) {
@@ -878,7 +922,7 @@ const serverPackets = {
                     const entityDataFlags = packet[i++];
                     entity.twiggle = Boolean(entityDataFlags & (1 << 0));
                     entity.reverse = Boolean(entityDataFlags & (1 << 1));
-                    entity.unknown = Boolean(entityDataFlags & (1 << 2));
+                    entity.drawHealth = Boolean(entityDataFlags & (1 << 2));
                     entity.invuln = Boolean(entityDataFlags & (1 << 3));
                     entity.damage1 = Boolean(entityDataFlags & (1 << 4));
                     entity.damage2 = Boolean(entityDataFlags & (1 << 5));
@@ -902,7 +946,7 @@ const serverPackets = {
                     entity.name = packet[i++];
                 }
                 if (entityFlags & (1 << 12)) {
-                    entity.color = packet[i++];
+                    entity.color = deserializeColor(packet[i++]);
                 }
                 if (entityFlags & (1 << 13)) {
                     entity.layer = packet[i++];
@@ -1004,30 +1048,35 @@ const serverPackets = {
             for (const mockup of values) {
                 packet.push(
                     mockup.mockupIndex,
-                    mockup.name,
+                    `${mockup.name}${mockup.censorName ? "/N" : ""}${mockup.censorDesign ? "/D" : ""}`,
                     mockup.scoreText,
-                    mockup.color
+                    serializeColor(mockup.color)
                 );
 
-                if (Array.isArray(mockup.shape)) {
+                let shape = mockup.shape.sides;
+                if (mockup.shape.flip) shape |= 1 << 9;
+                if (mockup.shape.star) shape |= 1 << 10;
+                if (mockup.shape.path || mockup.shape.threeD) shape |= 1 << 11;
+
+                packet.push(shape);
+                if (mockup.shape.path) {
                     packet.push(
-                        1 << 11,
-                        mockup.shape.length,
-                        ...mockup.shape.flat()
+                        mockup.shape.path.length,
+                        ...mockup.shape.path.flat()
                     );
-                } else packet.push(mockup.shape);
+                }
 
                 packet.push(
-                    mockup.entityType,
-                    mockup.shootsType,
-                    mockup.offset,
                     mockup.size,
+                    mockup.bulletType,
+                    mockup.offset,
+                    mockup.scale,
                     mockup.upgrades.length,
                     ...mockup.upgrades.flatMap(u => [u.tier, u.mockupIndex]),
                     mockup.guns.length,
-                    ...mockup.guns.flatMap(g => [g.x, g.y, g.length, g.width, g.aspect, g.angle]),
+                    ...mockup.guns.flatMap(g => [g.offset, g.direction, g.length, g.width, g.aspect, g.angle]),
                     mockup.turrets.length,
-                    ...mockup.turrets.flatMap(t => [t.mockupIndex, t.scale, t.offset, t.direction, t.renderOnTop, t.angle])
+                    ...mockup.turrets.flatMap(t => [t.mockupIndex, t.scale, t.offset, t.direction, t.layer, t.angle])
                 );
             }
 
@@ -1044,23 +1093,41 @@ const serverPackets = {
                 mockup.mockupIndex = packet[i++];
 
                 mockup.name = packet[i++];
-                mockup.scoreText = packet[i++];
-                mockup.color = packet[i++];
 
-                mockup.shape = packet[i++];
-                if (mockup.shape === 1 << 11) {
-                    const pathLength = packet[i++];
-                    mockup.shape = [];
-                    for (let k = 0; k < pathLength; k++) {
-                        mockup.shape.push([packet[i++], packet[i++]]);
-                    }
+                if (mockup.name.endsWith("/D")) {
+                    mockup.censorDesign = true;
+                    mockup.name = mockup.name.slice(0, -2);
+                }
+                if (mockup.name.endsWith("/N")) {
+                    mockup.censorName = true;
+                    mockup.name = mockup.name.slice(0, -2);
                 }
 
-                mockup.entityType = packet[i++];
-                mockup.shootsType = packet[i++];
+                mockup.scoreText = packet[i++];
+
+                mockup.color = deserializeColor(packet[i++]);
+
+                const shape = packet[i++];
+                mockup.shape = {
+                    sides: shape & 0xff
+                };
+                if (shape & 1 << 9) mockup.shape.flip = true;
+                if (shape & 1 << 10) mockup.shape.star = true;
+                if (shape & 1 << 11) {
+                    if (mockup.shape.sides === 0) {
+                        const pathLength = packet[i++];
+                        mockup.shape.path = [];
+                        for (let k = 0; k < pathLength; k++) {
+                            mockup.shape.path.push([packet[i++], packet[i++]]);
+                        }
+                    } else mockup.shape.threeD = true;
+                }
+
+                mockup.size = packet[i++];
+                mockup.bulletType = packet[i++];
 
                 mockup.offset = packet[i++];
-                mockup.size = packet[i++];
+                mockup.scale = packet[i++];
 
                 const upgradesLength = packet[i++];
                 mockup.upgrades = [];
@@ -1075,8 +1142,8 @@ const serverPackets = {
                 mockup.guns = [];
                 for (let k = 0; k < gunsLength; k++) {
                     mockup.guns.push({
-                        x: packet[i++],
-                        y: packet[i++],
+                        offset: packet[i++],
+                        direction: packet[i++],
                         length: packet[i++],
                         width: packet[i++],
                         aspect: packet[i++],
@@ -1092,7 +1159,7 @@ const serverPackets = {
                         scale: packet[i++],
                         offset: packet[i++],
                         direction: packet[i++],
-                        renderOnTop: packet[i++],
+                        layer: packet[i++],
                         angle: packet[i++]
                     });
                 }
@@ -1144,55 +1211,67 @@ const serverPackets = {
         }
     },
     b: {
-        serialize({ minimapRemovedLength, minimapRemoved, minimapChangedLength, minimapChanged, teamMinimapRemovedLength, teamMinimapRemoved, teamMinimapChangedLength, teamMinimapChanged, leaderboardRemovedLength, leaderboardRemoved, leaderboardChangedLength, leaderboardChanged }) {
+        serialize({ minimapRemoved, minimapChanged, minimapReset, teamMinimapRemoved, teamMinimapChanged, teamMinimapReset, leaderboardRemoved, leaderboardChanged, leaderboardReset }) {
             const packet = ["b"];
 
-            packet.push(minimapRemovedLength);
-            for (const { id } of minimapRemoved) {
-                packet.push(id);
+            if (minimapReset) {
+                packet.push(-1);
+            } else {
+                packet.push(minimapRemoved.length);
+                for (const { id } of minimapRemoved) {
+                    packet.push(id);
+                }
             }
 
-            packet.push(minimapChangedLength);
+            packet.push(minimapChanged.length);
             for (const { id, type, x, y, color, size } of minimapChanged) {
                 packet.push(
                     id,
                     type,
                     x * 255,
                     y * 255,
-                    color,
+                    serializeColor(color),
                     size
                 );
             }
 
-            packet.push(teamMinimapRemovedLength);
-            for (const { id } of teamMinimapRemoved) {
-                packet.push(id);
+            if (teamMinimapReset) {
+                packet.push(-1);
+            } else {
+                packet.push(teamMinimapRemoved.length);
+                for (const { id } of teamMinimapRemoved) {
+                    packet.push(id);
+                }
             }
 
-            packet.push(teamMinimapChangedLength);
+            packet.push(teamMinimapChanged.length);
             for (const { id, x, y, color } of teamMinimapChanged) {
                 packet.push(
                     id,
                     x * 255,
                     y * 255,
-                    color
+                    serializeColor(color)
                 );
             }
 
-            packet.push(leaderboardRemovedLength);
-            for (const { id } of leaderboardRemoved) {
-                packet.push(id);
+            if (leaderboardReset) {
+                packet.push(-1);
+            } else {
+                packet.push(leaderboardRemoved.length);
+                for (const { id } of leaderboardRemoved) {
+                    packet.push(id);
+                }
             }
 
-            packet.push(leaderboardChangedLength);
+            packet.push(leaderboardChanged.length);
             for (const { id, score, mockupIndex, name, color, barColor } of leaderboardChanged) {
                 packet.push(
                     id,
                     score,
                     mockupIndex,
                     name,
-                    color,
-                    barColor
+                    serializeColor(color),
+                    serializeColor(barColor)
                 );
             }
 
@@ -1222,7 +1301,7 @@ const serverPackets = {
                     type: packet[i++],
                     x: packet[i++] / 255,
                     y: packet[i++] / 255,
-                    color: packet[i++],
+                    color: deserializeColor(packet[i++]),
                     size: packet[i++]
                 });
             }
@@ -1240,7 +1319,7 @@ const serverPackets = {
                     id: packet[i++],
                     x: packet[i++] / 255,
                     y: packet[i++] / 255,
-                    color: packet[i++]
+                    color: deserializeColor(packet[i++])
                 });
             }
 
@@ -1258,12 +1337,22 @@ const serverPackets = {
                     score: packet[i++],
                     mockupIndex: packet[i++],
                     name: packet[i++],
-                    color: packet[i++],
-                    barColor: packet[i++]
+                    color: deserializeColor(packet[i++]),
+                    barColor: deserializeColor(packet[i++])
                 });
             }
 
-            return { minimapRemovedLength, minimapRemoved, minimapChangedLength, minimapChanged, teamMinimapRemovedLength, teamMinimapRemoved, teamMinimapChangedLength, teamMinimapChanged, leaderboardRemovedLength, leaderboardRemoved, leaderboardChangedLength, leaderboardChanged };
+            return {
+                minimapRemoved,
+                minimapChanged,
+                minimapReset: minimapRemovedLength === -1,
+                teamMinimapRemoved,
+                teamMinimapChanged,
+                teamMinimapReset: teamMinimapRemovedLength === -1,
+                leaderboardRemoved,
+                leaderboardChanged,
+                leaderboardReset: leaderboardRemovedLength === -1
+            };
         }
     },
     c: {
@@ -1467,7 +1556,10 @@ class ArrasSocket extends WebSocket {
         const packet = this.arrasProtocol.decode(decryptedPacket);
         const packetType = packet.shift();
         const type = clientPackets[packetType];
-        if (!type) throw `Unknown client packet: ${packetType}`;
+        if (!type) {
+            console.log(packet)
+            throw `Unknown client packet: ${packetType}`;
+        }
 
         const editedPacket = await arras.client.emit(packetType, type.deserialize(packet));
         if (editedPacket === false) return;
