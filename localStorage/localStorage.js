@@ -156,7 +156,7 @@ function getLocalStorage(input) {
             case "int":
                 object[lastKey] = property.reduce((a, b) => (a << 8) | b, 0);
                 break;
-            case "float64":
+            case "float":
                 object[lastKey] = buffer.readFloatLE(propertyIndex);
                 break;
             case "string":

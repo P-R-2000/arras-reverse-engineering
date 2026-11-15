@@ -13,7 +13,7 @@
         "author": "string",
         "borders": {
             "color": "int",
-            "blend": "float64",
+            "blend": "float",
             "neon": "bool"
         },
         "colors": {
@@ -45,34 +45,41 @@
         "miter": "bool",
         "miter_stars": "bool",
         "quadratic_stars": "bool",
-        "border_thickness": "float64",
+        "border_thickness": "float",
         "render_health": "bool",
         "render_names": "bool",
         "render_scores": "bool",
         "render_chat": "bool",
         "render_skins": "bool",
-        "censor": "int",
+        "censor_chat": "int",
         "alpha_animations": "bool"
     },
     "secrets": {
         "unlocked": "bool",
-        "unlocked_full": "bool",
+        "unlocked_super": "bool",
         "crosshair": "bool",
         "rainbow_player_teams": "bool",
-        "uncapped_frame_rate": "bool",
         "copy_captures": "bool",
         "force_aspect_ratio": "bool",
         "self_centered_minimap": "bool",
         "brainrot_filter": "bool",
+        "render_old_nest": "bool",
+        "wireframes": "bool",
+        "alpha_large": "bool",
+        "all_servers": "bool",
+        "debug_hitboxes": "bool",
         "dmca": "bool",
         "localhost": "bool",
+        "debug_boxes": "bool",
+        "keyboard_display": "bool",
+        "beta": "bool",
         "skill_save": "bool",
         "player_list": "bool",
-        "legacy_themes": "bool"
+        "server_uptime": "bool",
+        "legacy_unscaled_spawn_panel": "bool"
     },
     "ui": {
         "size": "int",
-        "unscaled_legacy_spawn_panel": "bool",
         "upgrades": "bool",
         "minimap": "bool",
         "leaderboard": "bool",
@@ -82,20 +89,24 @@
     },
     "performance": {
         "smooth_camera": "bool",
-        "renderer": "int",
-        "low_graphics": "bool"
+        "resolution": "int",
+        "frame_rate": "int",
+        "renderer": "int"
     },
     "extra": {
         "auto_max": "bool",
-        "incognito": "bool"
+        "incognito": "bool",
+        "auto_reconnect": "bool"
     },
     "keybinds": {
+        "control_0": "string",
+        "control_1": "string",
+        "control_2": "string",
+        "scope": "string",
         "movement_up": "string",
         "movement_left": "string",
         "movement_down": "string",
         "movement_right": "string",
-        "control_0": "string",
-        "control_2": "string",
         "toggle_autofire": "string",
         "toggle_autospin": "string",
         "toggle_override": "string",
@@ -109,6 +120,7 @@
         "upgrade_class_0": "string",
         "upgrade_class_1": "string",
         "upgrade_class_2": "string",
+        "upgrade_class_3": "string",
         "upgrade_class_4": "string",
         "upgrade_class_5": "string",
         "upgrade_class_6": "string",
