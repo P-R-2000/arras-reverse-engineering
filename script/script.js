@@ -404,15 +404,17 @@ const clientPackets = {
         }
     },
     s: {
-        serialize({ name = "", partyId = "", autoLevelUp, incognito }) {
-            return ["s", name, partyId, autoLevelUp | incognito << 1];
+        serialize({ name = "", partyId = "", autoLevelUp, incognito, anonymous, stealth }) {
+            return ["s", name, partyId, autoLevelUp | incognito << 1 | anonymous << 2 | stealth << 3 ];
         },
         deserialize(packet) {
             return {
                 name: packet[0],
                 partyId: packet[1],
-                autoLevelUp: Boolean(packet[2] & 0b1),
-                incognito: Boolean(packet[2] & 0b10)
+                autoLevelUp: Boolean(packet[2] & 1 << 0),
+                incognito: Boolean(packet[2] & 1 << 1),
+                anonymous: Boolean(packet[2] & 1 << 2),
+                stealth: Boolean(packet[2] & 1 << 3)
             };
         }
     },
@@ -480,21 +482,22 @@ const clientPackets = {
         }
     },
     C: {
-        serialize({ x, y, up, down, left, right, lmb, rmb, mmb, scope }) {
-            return ["C", x, y, up | down << 1 | left << 2 | right << 3 | lmb << 4 | rmb << 5 | mmb << 6 | scope << 7];
+        serialize({ x, y, up, down, left, right, lmb, rmb, mmb, scope, timeout }) {
+            return ["C", x, y, up | down << 1 | left << 2 | right << 3 | lmb << 4 | rmb << 5 | mmb << 6 | scope << 7 | timeout << 8];
         },
         deserialize(packet) {
             return {
                 x: packet[0],
                 y: packet[1],
-                up: Boolean(packet[2] & 0b1),
-                down: Boolean(packet[2] & 0b10),
-                left: Boolean(packet[2] & 0b100),
-                right: Boolean(packet[2] & 0b1000),
-                lmb: Boolean(packet[2] & 0b10000),
-                rmb: Boolean(packet[2] & 0b100000),
-                mmb: Boolean(packet[2] & 0b1000000),
-                scope: Boolean(packet[2] & 0b10000000)
+                up: Boolean(packet[2] & 1 << 0),
+                down: Boolean(packet[2] & 1 << 1),
+                left: Boolean(packet[2] & 1 << 2),
+                right: Boolean(packet[2] & 1 << 3),
+                lmb: Boolean(packet[2] & 1 << 4),
+                rmb: Boolean(packet[2] & 1 << 5),
+                mmb: Boolean(packet[2] & 1 << 6),
+                scope: Boolean(packet[2] & 1 << 7),
+                timeout: Boolean(packet[2] & 1 << 8)
             };
         }
     },
