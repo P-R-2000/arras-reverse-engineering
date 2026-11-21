@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arras Packet Hook
 // @namespace    http://tampermonkey.net/
-// @version      1.1
+// @version      1.2
 // @description  Allows hooking of arras.io packets
 // @author       pr2000
 // @match        https://arras.io/
