@@ -7,6 +7,7 @@
         "category": "int"
     },
     "skill_upgrade_saves": "string",
+    "quick_upgrades": "string",
     "theme_codes": "string",
     "theme": {
         "name": "string",
