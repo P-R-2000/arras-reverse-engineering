@@ -230,7 +230,7 @@ function setLocalStorage(object) {
     }
     buffer.writeInt16LE(i, 0);
 
-    return encryptLocalStorage(buffer.subarray(0, i + 2));
+    return encryptLocalStorage(buffer);
 }
 
 module.exports = { getLocalStorage, setLocalStorage };
