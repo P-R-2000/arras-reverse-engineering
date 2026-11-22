@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Copy arras.io player names
 // @namespace    http://tampermonkey.net/
-// @version      1.0
-// @description  Copies player name when single-clicking the report button, reports on double-click
+// @version      1.1
+// @description  Copies player name when double-clicking the profile button
 // @author       pr2000
 // @match        https://arras.io/
 // @match        https://arrax.io/
@@ -31,13 +31,14 @@ arras.client.on("r", p => {
     if (p.socketId === last) {
         clearTimeout(timeout);
         last = null;
+        navigator.clipboard.writeText(players.get(p.socketId).name);
+        arras.server.send("m", { message: "Copied player name!" });
     } else {
         last = p.socketId;
         timeout = setTimeout(() => {
             last = null;
-            navigator.clipboard.writeText(players.get(p.socketId).name);
-            arras.server.send("m", { message: "Copied player name!" });
+            arras.client.send("r", { socketId: p.socketId });
         }, 300);
-        return false;
     }
+    return false;
 });
