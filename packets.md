@@ -14,7 +14,8 @@
 **T**racking - tracking data
 second (optional) packet sent by the client <br>
 `data`: a JSON string containing the following data:
-      `{
+      ```json
+      {
           "adblock": bool,
           "mobile": bool,
           "storage": object, // the arras local storage data
@@ -43,7 +44,7 @@ second (optional) packet sent by the client <br>
               },
               "report": string // contains the .toString() value of window.addEventListener, canvas.addEventListener, WebAssembly.instantiate, WebAssembly.instantiateStreaming, requestAnimationFrame, Function and an error stack
           }
-    }`
+    }```
 ### p
 **p**ing - replies to the server ping also sent after receiving the "w" packet
 ### s
