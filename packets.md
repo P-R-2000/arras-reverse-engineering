@@ -14,7 +14,7 @@
 **T**racking - tracking data
 second (optional) packet sent by the client <br>
 `data`: a JSON string containing the following data:
-      ```json
+      ```yaml
       {
           "adblock": bool,
           "mobile": bool,
