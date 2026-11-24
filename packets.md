@@ -114,7 +114,7 @@ Welcome
 ### P
 Player list
 ### m
-**m**essage - message which appears in top middle of the screen(not chat message!)
+**m**essage - message which appears in top middle of the screen(not chat message!)<br>
 `message`: message text
 ### J
 mock ups
@@ -132,17 +132,17 @@ broadcast
 **c**amera - 
 ### M
 chat **M**essage <br>
-`entityId`: ID of message sender
-`message`: the message text
-`isGlobal`: is message a global one, or local(team chat for example)
+`entityId`: ID of message sender<br>
+`message`: the message text<br>
+`isGlobal`: is message a global one, or local(team chat for example)<br>
 ### K
-**K**ick - kicks player from room
-`reason`: kick reason
+**K**ick - kicks player from room<br>
+`reason`: kick reason<br>
 ### F
-death - makes player dead, sends information about player death
-`time`
-`timeAlive`: amount of time player was alive for
-`score`: amount of score player gained
+death - makes player dead, sends information about player death<br>
+`time`<br>
+`timeAlive`: amount of time player was alive for<br>
+`score`: amount of score player gained<br>
 `kills`: {<br>
           `player`: amount of players killed<br>
           `assist`: amount of assist kills<br>
@@ -151,21 +151,20 @@ death - makes player dead, sends information about player death
 }
 `killInfo`: {<br>
           `type`: who killed the player. Can be "none", "food", "player" <br>
-}
-`killers`
+}<br>
+`killers`<br>
 `deathType`: type of death. Can be "killed", "dumb_death", "self_destruct", "surrender_control", "save_score"
-`serverActivity`: activity of server, measured in %
-`serversTraveled`: amount of servers traveled
-`respawnTime`: timeout for respawn
-`saveCode`: save code
-
+`serverActivity`: activity of server, measured in %<br>
+`serversTraveled`: amount of servers traveled<br>
+`respawnTime`: timeout for respawn<br>
+`saveCode`: save code<br>
 ### r
-server t**r**avel - sends player to another server
-`server`: server to send to
+server t**r**avel - sends player to another server<br>
+`server`: server to send to<br>
 `travelToken`: a 8-character hex token used to transfer players from one server to another. 
              It's given by the first server in the "r" packet <br>
 ### k
-**k**ey - gives player a token.
+**k**ey - gives player a token.<br>
 `playerToken`: the token connected to a discord account that can give special permissions. 
              It's given by the server in the "k" packet when running $auth with a valid login token. 
              It gets stored inside arrasLocalStorage.token <br>
