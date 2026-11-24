@@ -46,7 +46,7 @@ second (optional) packet sent by the client <br>
           }
     }```
 ### p
-**p**ing - replies to the server ping also sent after receiving the "w" packet
+**p**ing - replies to the server ping. Also sent after receiving the "w" packet
 ### s
 **s**pawn request - spawns the player <br>
 `name`: the player name <br>
@@ -114,7 +114,8 @@ Welcome
 ### P
 Player list
 ### m
-message
+**m**essage - message which appears in top middle of the screen(not chat message!)
+`message`: message text
 ### J
 mock ups
 ### C
@@ -124,18 +125,47 @@ eval
 ### G
 turnstile request
 ### p
-ping
+**p**ing - replies to the client ping.
 ### b
 broadcast
 ### c
 **c**amera - 
 ### M
-chat message
+chat **M**essage <br>
+`entityId`: ID of message sender
+`message`: the message text
+`isGlobal`: is message a global one, or local(team chat for example)
 ### K
-kick
+**K**ick - kicks player from room
+`reason`: kick reason
 ### F
-death
+death - makes player dead, sends information about player death
+`time`
+`timeAlive`: amount of time player was alive for
+`score`: amount of score player gained
+`kills`: {<br>
+          `player`: amount of players killed<br>
+          `assist`: amount of assist kills<br>
+          `boss`: amount of bosses killed<br>
+          `boss`: amount of food(polygons) killed<br>
+}
+`killInfo`: {<br>
+          `type`: who killed the player. Can be "none", "food", "player" <br>
+}
+`killers`
+`deathType`: type of death. Can be "killed", "dumb_death", "self_destruct", "surrender_control", "save_score"
+`serverActivity`: activity of server, measured in %
+`serversTraveled`: amount of servers traveled
+`respawnTime`: timeout for respawn
+`saveCode`: save code
+
 ### r
-server travel
+server t**r**avel - sends player to another server
+`server`: server to send to
+`travelToken`: a 8-character hex token used to transfer players from one server to another. 
+             It's given by the first server in the "r" packet <br>
 ### k
-key
+**k**ey - gives player a token.
+`playerToken`: the token connected to a discord account that can give special permissions. 
+             It's given by the server in the "k" packet when running $auth with a valid login token. 
+             It gets stored inside arrasLocalStorage.token <br>
