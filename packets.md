@@ -103,3 +103,38 @@ suicide - **K**ills the player body
 ### D
 pause score - saves the player score
 
+## Server packets
+### R
+Room
+### u
+Update
+### w
+Welcome
+### P
+Player list
+### m
+message
+### J
+mock ups
+### C
+proof of work
+### e
+eval
+### G
+turnstile request
+### p
+ping
+### b
+broadcast
+### c
+**c**amera - 
+### M
+chat message
+### K
+kick
+### F
+death
+### r
+server travel
+### k
+key
