@@ -168,3 +168,17 @@ server t**r**avel - sends player to another server<br>
 `playerToken`: the token connected to a discord account that can give special permissions. 
              It's given by the server in the "k" packet when running $auth with a valid login token. 
              It gets stored inside arrasLocalStorage.token <br>
+## Connection packet order
+1. client sends k(key verification) packet.
+ping packets start sending after this
+2. client sends T(tracking) packet
+3. server sends G(turnstile request) packet
+4. client sends G(turnstile token) packet
+5. server sends w(welcome) packet
+6. client sends s(spawn) packet.
+everything else starts sending after this
+7. server sends C(proof of work request) packet
+8. client sends R(proof of work) packet
+9. server sends e(eval request) packet
+10. client send e(eval result) packet
+
