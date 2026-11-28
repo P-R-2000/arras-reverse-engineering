@@ -1,7 +1,6 @@
 const EventEmitter = require("events");
 const crypto = require("crypto");
 const WebSocket = require("ws");
-const util = require("util");
 const vm = require("vm");
 
 const vmContext = {
@@ -20,24 +19,24 @@ vm.createContext(vmContext);
 
 class GrowableBuffer {
     constructor() {
-        this.arrayBuffer = new ArrayBuffer(0, { maxByteLength: 2 ** 32 });
+        this.arrayBuffer = new ArrayBuffer(2 ** 6, { maxByteLength: 2 ** 32 });
         this.buffer = Buffer.from(this.arrayBuffer);
         this.offset = 0;
     }
     check(size) {
         if (this.arrayBuffer.byteLength - this.offset < size) {
-            this.arrayBuffer.resize(this.offset + size);
+            this.arrayBuffer.resize((this.offset + size) * 2);
         }
     }
     write(data) {
         const buffer = Buffer.from(data);
-        this.check(buffer.byteLength);
+        this.check(buffer.length);
         buffer.copy(this.buffer, this.offset);
-        this.offset += buffer.byteLength;
+        this.offset += buffer.length;
     }
     writeUint8(data) {
         this.check(1);
-        this.buffer.writeUint8(data, this.offset);
+        this.buffer[this.offset] = data;
         this.offset++;
     }
     writeUint16(data) {
@@ -68,9 +67,9 @@ function quarterRound(output, a, b, c, d) {
     output[c] += output[d];
     output[b] = rotl(output[b] ^ output[c], 12);
     output[a] += output[b];
-    output[d] = rotl(output[d] ^ output[a],  8);
+    output[d] = rotl(output[d] ^ output[a], 8);
     output[c] += output[d];
-    output[b] = rotl(output[b] ^ output[c],  7);
+    output[b] = rotl(output[b] ^ output[c], 7);
 }
 function chacha20(state) {
     const output = new Int32Array(16);
@@ -89,16 +88,6 @@ function chacha20(state) {
         output[i] = state[i] + output[i];
     }
     return new Uint8Array(output.buffer);
-}
-
-function clz64(number) {
-    if (number === 0n) return 64;
-
-    const high = Number(number >> 32n);
-    if (high !== 0) return Math.clz32(high);
-
-    const low = Number(number & 0xffffffffn);
-    return Math.clz32(low) + 32;
 }
 
 class ArrasProtocol {
@@ -163,15 +152,15 @@ class ArrasProtocol {
             const chunkKey = chacha20(this.stateArray);
 
             for (let j = 0; j < 64 && i + j < size; j++) {
-                if (i === 0 && j === 0 && packets && !packets.includes(packet[0] ^ chunkKey[0])) return false;
+                if (packets && j === 0 && i === 0 && !packets.has(packet[0] ^ chunkKey[0])) return false;
                 dataBuffer.writeUint8(packet[i + j] ^ chunkKey[j], i + j);
             }
         }
-        return new Uint8Array(dataBuffer);
+        return dataBuffer;
     }
     decode(packet) {
         const buffer = Buffer.from(packet.buffer);
-        const output = [ String.fromCharCode(packet[0]) ];
+        const output = [String.fromCharCode(packet[0])];
         for (let i = 1; i < packet.length;) {
             const header = packet[i++];
 
@@ -187,23 +176,20 @@ class ArrasProtocol {
                     i += header & 0x1f;
                     break;
                 case header < 0xfe:
-                    const intSize = header < 0xf0 ? 2 : 
-                                    header < 0xf8 ? 3 :
-                                    header < 0xfc ? 4 :
-                                    5;
-                    const headerBits = 6 - intSize;
-
-                    let number = header & ((1 << headerBits) - 1);
-                    if (number & (1 << (headerBits - 1))) {
-                        number -= 1 << headerBits;
+                    if (header < 0xf0) {
+                        output.push(((header << 28) >> 20) | packet[i]);
+                        i += 1;
+                    } else if (header < 0xf8) {
+                        output.push(((header << 29) >> 13) | (packet[i] << 8) | packet[i + 1]);
+                        i += 2;
+                    } else if (header < 0xfc) {
+                        output.push(((header << 30) >> 6) | (packet[i] << 16) | (packet[i + 1] << 8) | packet[i + 2]);
+                        i += 3;
+                    } else {
+                        const low32 = ((packet[i] << 24) | (packet[i + 1] << 16) | (packet[i + 2] << 8) | packet[i + 3]) >>> 0;
+                        output.push((header & 1) ? low32 - 0x100000000 : low32);
+                        i += 4;
                     }
-
-                    for (let j = 0; j < intSize - 1; j++) {
-                        number = (number * 0x100) + packet[i + j];
-                    }
-
-                    output.push(number);
-                    i += intSize - 1;
                     break;
                 case header === 0xfe:
                     let length = buffer.readUint16LE(i);
@@ -232,20 +218,25 @@ class ArrasProtocol {
             switch (typeof data) {
                 case "string":
                     const length = Buffer.byteLength(data);
-                    if (length < 0x20) {
+                    if (length < 2 ** 5) {
                         buffer.writeUint8(0xc0 | length);
                         buffer.write(data);
-                    } else if (length < 0x10000) {
+                    } else if (length < 2 ** 16) {
                         buffer.writeUint8(0xfe);
                         buffer.writeUint16(length);
                         buffer.write(data);
-                    } else {
+                    } else if (length < 2 ** 32) {
                         buffer.writeUint8(0xfe);
                         buffer.writeUint16(0);
                         buffer.writeUint32(length);
                         buffer.write(data);
+                    } else {
+                        console.log(packet, data, i);
+                        throw "unencodable string";
                     }
                     break;
+                case "bigint":
+                    data = Number(data);
                 case "number":
                     if (!Number.isInteger(data)) {
                         buffer.writeUint8(0xff);
@@ -253,713 +244,1232 @@ class ArrasProtocol {
                         break;
                     }
                 case "boolean":
-                    data = BigInt(data);
-                case "bigint":
-                    if (data >= 0n && data <= 127n) {
-                        buffer.writeUint8(Number(data));
-                        break;
+                    if (data >= 0 && data <= 127) {
+                        buffer.writeUint8(data);
+                    } else if (data >= -64 && data < 0) {
+                        buffer.writeUint8(data & 0xbf);
+                    } else if (data >= -2048 && data <= 2047) {
+                        buffer.writeUint8(0xe0 | ((data >> 8) & 0x0f));
+                        buffer.writeUint8(data & 0xff);
+                    } else if (data >= -262144 && data <= 262143) {
+                        buffer.writeUint8(0xf0 | ((data >> 16) & 0x07));
+                        buffer.writeUint8((data >> 8) & 0xff);
+                        buffer.writeUint8(data & 0xff);
+                    } else if (data >= -33554432 && data <= 33554431) {
+                        buffer.writeUint8(0xf8 | ((data >> 24) & 0x03));
+                        buffer.writeUint8((data >> 16) & 0xff);
+                        buffer.writeUint8((data >> 8) & 0xff);
+                        buffer.writeUint8(data & 0xff);
+                    } else if (data >= -4294967296 && data <= 4294967295) {
+                        buffer.writeUint8(data < 0 ? 0xfd : 0xfc);
+                        buffer.writeUint8((data >>> 24) & 0xff);
+                        buffer.writeUint8((data >>> 16) & 0xff);
+                        buffer.writeUint8((data >>> 8) & 0xff);
+                        buffer.writeUint8(data & 0xff);
+                    } else {
+                        buffer.writeUint8(0xff);
+                        buffer.writeFloat(data);
                     }
-                    if (data >= -64n && data < 0n) {
-                        buffer.writeUint8(Number(data & 0xbfn));
-                        break;
-                    }
-
-                    const a = data >= 0n ? data : ~data;
-                    const lz = clz64(a);
-                    const intSize = Math.floor((73 - lz) / 7);
-
-                    if (intSize < 2 || intSize > 5) throw "unencodable number";
-
-                    const prefix = (0xfffffe00 >>> ((intSize + 2) & 0x1f)) & 0xff;
-
-                    const bytes = Array(intSize);
-                    for (let j = intSize - 1; j > 0; j--) {
-                        bytes[j] = Number(data & 0xffn);
-                        data >>= 8n;
-                    }
-                    bytes[0] = prefix | Number(data & BigInt((1 << (6 - intSize)) - 1));
-
-                    for (const byte of bytes) buffer.writeUint8(byte);
                     break;
                 default:
+                    console.log(packet, data, i);
                     throw "unknown packet data type";
             }
         }
-        return new Uint8Array(buffer.buffer);
+        return buffer.buffer.subarray(0, buffer.offset);
     }
+}
+
+function serializeColor(color) {
+    if (typeof color === "string") {
+        return 1 << 24 | parseInt(color.slice(1), 16);
+    }
+    return color;
+}
+
+function deserializeColor(color) {
+    if (color & 1 << 24) {
+        return `#${(color ^ 1 << 24).toString(16).padStart(6, "0")}`;
+    }
+    return color;
 }
 
 const clientPackets = {
-    k (playerId = "", playerToken = "", travelToken = "") {
-        // key verification - authenticates the player
-        // first packet sent by the client
-        // playerId: the player ID that identifies that player
-        //           it's given by the first server the player joins in the "w" packet
-        //           it gets stored inside arrasLocalStorage.id
-        // playerToken: the token connected to a discord account that can give special permissions
-        //              it's given by the server in the "k" packet when running $auth with a valid login token
-        //              it gets stored inside arrasLocalStorage.token
-        // travelToken: a 8-character hex token used to transfer players from one server to another
-        //              it's given by the first server in the "r" packet
-
-        return ["k", playerId, playerToken, travelToken];
-    },
-    T (data) {
-        // tracking - tracking data
-        // second (optional) packet sent by the client
-        // data: a JSON string containing the following data:
-        //       {
-        //           "adblock": bool,
-        //           "mobile": bool,
-        //           "storage": object, // the arras local storage data
-        //           "overseer": {
-        //               "features": { // various browser features
-        //                   "wasm": array,
-        //                   "rtc": string,
-        //                   "wt": bool,
-        //                   "sw": bool,
-        //                   "gpu": bool,
-        //                   "credentialless": bool,
-        //                   "ua": string,
-        //                   "hc": int,
-        //                   "renderer": string,
-        //                   "webgl": string,
-        //                   "experimental-webgl": string,
-        //                   "webgl2": string
-        //               },
-        //               "window": { // window size
-        //                   "innerWidth": int,
-        //                   "innerHeight": int
-        //               },
-        //               "fingerprints": { // browser fingerprints
-        //                   "canvas": string,
-        //                   "unicode": string
-        //               },
-        //               "report": string // contains the .toString() value of window.addEventListener, canvas.addEventListener, WebAssembly.instantiate, WebAssembly.instantiateStreaming, requestAnimationFrame, Function and an error stack
-        //           }
-        //     }
-
-        return ["T", JSON.stringify(data)];
-    },
-    p () {
-        // ping - replies to the server ping
-        // also sent after receiving the "w" packet
-
-        return ["p"];
-    },
-    s (name = "", partyId = "", { autoLevelUp, incognito } = {}) {
-        // spawn request - spawns the player
-        // name: the player name
-        // partyId: the party id of team to spawn into
-        // flags: spawn settings (auto level up, incognito)
-
-        return ["s", name, partyId, autoLevelUp | incognito << 1];
-    },
-    e (id, result) {
-        // eval - eval result
-        // sent in response to the "e" packet
-        // required to spawn
-        // id: the eval id (sent by the server in the "e" packet)
-        // result: the eval result
-
-        return ["e", id, result];
-    },
-    R (input, result) {
-        // proof of work - hash result
-        // sent in response to the "C" packet
-        // required to spawn
-        // input: the input string (sent by the server in the "C" packet)
-        // result: the proof of work result
-
-        return ["R", input, result];
-    },
-    G (id, token, error = "") {
-        // turnstile token
-
-        return ["G", id, token, error];
-    },
-    U (index) {
-        // upgrade request - upgrades to a tank
-        // index - the tank index in the upgrades
-
-        return ["U", index];
-    },
-    x (index, type = "add", value) {
-        // skill upgrade request - upgrades a skill
-        // index: the skill index
-        // type: type of upgrade (add, max, set)
-        // value: the value to set the skill to
-
-        switch (type) {
-            case "add":
-                return ["x", index, -1];
-            case "max":
-                return ["x", index, 255];
-            case "set":
-                return ["x", index, value];
-        }
-    },
-    C (x, y, { up, down, left, right, lmb, rmb } = {}) {
-        // command - tank command
-        // x: tank target x
-        // y: tank target y
-        // action: movement and shooting actions (up, down, left, right, lmb, rmb)
-
-        return ["C", x, y, up | down << 1 | left << 2 | right << 3 | lmb << 4 | rmb << 6];
-    },
-    t (action) {
-        // player toggle - toggles tank actions
-        // action: tank action (autofire, autospin, override, reverse)
-
-        return ["t", ["autofire", "autospin", "override", "reverse"].indexOf(action)];
-    },
-    L () {
-        // level up cheat - levels up the tank
-
-        return ["L"];
-    },
-    0 (keyCode, isKeyDown) {
-        // key command - key press info
-        // sends keydown and keyup information only while the sandbox key is being held
-        // keyCode: the KeyboardEvent.prototype.code of a key press (use Self for the sandbox key `)
-        // isKeyDown: true for keydown, false for keyup
-
-        return ["0", keyCode, isKeyDown];
-    },
-    M (message) {
-        // chat messages - sends a chat message
-        // message: the chat message
-
-        return ["M", message];
-    },
-    P (action, playerId) {
-        // player action - executes an action on a player
-        // works only while being an operator
-        // action: the action to perform on the player (promote, demote, kick)
-        // playerId: the current socket id of the player
-
-        return ["P", ["promote", "demote", "kick"].indexOf(action), playerId];
-    },
-    K () {
-        // suicide - kills the player body
-        
-        return ["K"];
-    },
-    A () {
-        // ability - runs the F key ability
-
-        return ["A"];
-    },
-    D () {
-        // pause score - saves the player score
-
-        return ["D"];
-    }
-}
-const serverPackets = {
-    R (packet) { // room
-        let i = 0;
-
-        const info = Object.fromEntries(packet[i++].split(",").filter(d => d).map(d => d.split("=")));
-        const roomX1 = packet[i++];
-        const roomY1 = packet[i++];
-        const roomX2 = packet[i++];
-        const roomY2 = packet[i++];
-        const unknown = packet[i++];
-        const tileWidth = packet[i++];
-        const tileHeight = packet[i++];
-        
-        const tiles = Array(tileHeight).fill().map(() => Array(tileWidth));
-
-        for (let y = 0; y < tileHeight; y++) {
-            for (let x = 0; x < tileWidth; x++) {
-                tiles[y][x] = packet[i++];
-            }
-        }
-
-        return {
-            info,
-            roomX1,
-            roomY1,
-            roomX2,
-            roomY2,
-            tiles
-        };
-    },
-    u (packet) { // update
-        let i = 0;
-
-        const output = {
-            bodyX: packet[i++],
-            bodyY: packet[i++],
-            bodyFov: packet[i++],
-            dead: [],
-            removed: [],
-            changed: []
-        };
-        
-        const updateFlags = packet[i++];
-
-        if (updateFlags & (1 << 0)) {
-            output.mspt = packet[i++];
-        }
-        if (updateFlags & (1 << 1)) {
-            output.speed = packet[i++];
-        }
-        if (updateFlags & (1 << 2)) {
-            output.mockupIndex = packet[i++];
-            i++;
-        }
-        if (updateFlags & (1 << 3)) {
-            output.color = packet[i++];
-            output.id = packet[i++];
-        }
-        if (updateFlags & (1 << 4)) {
-            output.score = packet[i++];
-        }
-        if (updateFlags & (1 << 5)) {
-            output.kills = {
-                player: packet[i++],
-                assist: packet[i++],
-                boss: packet[i++],
-                food: packet[i++]
+    k: {
+        serialize({ playerId = "", playerToken = "", travelToken = "" }) {
+            return ["k", playerId, playerToken, travelToken];
+        },
+        deserialize(packet) {
+            return {
+                playerId: packet[0],
+                playerToken: packet[1],
+                travelToken: packet[2]
             };
         }
-        if (updateFlags & (1 << 6)) {
-            output.skillPoints = packet[i++];
-        }
-        if (updateFlags & (1 << 7)) {
-            output.maxSkills = [];
-            for (let j = 0; j < 10; j++) {
-                output.maxSkills.push(packet[i++]);
-            }
-        }
-        if (updateFlags & (1 << 8)) {
-            output.skills = [];
-            for (let j = 0; j < 10; j++) {
-                output.skills.push(packet[i++]);
-            }
-        }
-        if (updateFlags & (1 << 9)) {
-            const upgradesLength = packet[i++];
-            output.upgrades = [];
-            for (let j = 0; j < upgradesLength; j++) {
-                output.upgrades.push(packet[i++]);
-            }
-        }
-        if (updateFlags & (1 << 10)) {
-            output.partyCode = packet[i++];
-        }
-        if (updateFlags & (1 << 11)) {
-            output.operatorLevel = packet[i++];
-        }
-
-        while (packet[i] !== -1) {
-            output.dead.push({
-                id: packet[i++]
-            });
-        }
-        i++;
-
-        while (packet[i] !== -1) {
-            output.removed.push({
-                id: packet[i++]
-            });
-        }
-        i++;
-
-        function parseEntity() {
-            const entity = {};
-            const entityFlags = packet[i++];
-
-            if (entityFlags & (1 << 0)) {
-                entity.deltaX = packet[i++] / 4;
-                entity.deltaY = packet[i++] / 4;
-            }
-            if (entityFlags & (1 << 1)) {
-                entity.deltaFacing = packet[i++] * Math.PI / 512;
-            }
-            if (entityFlags & (1 << 2)) {
-                entity.mockupIndex = packet[i++];
-            }
-            if (entityFlags & (1 << 3)) {
-                entity.guns = {};
-                while (packet[i] !== -1) {
-                    const gunIndex = packet[i++];
-                    const gunFlags = packet[i++];
-                    const gun = {};
-
-                    if (gunFlags & (1 << 0)) gun.time = packet[i++];
-                    if (gunFlags & (1 << 1)) gun.power = packet[i++];
-
-                    entity.guns[gunIndex] = gun;
-                }
-                i++;
-            }
-            if (entityFlags & (1 << 4)) {
-                entity.turrets = {};
-                while (packet[i] !== -1) {
-                    const turretIndex = packet[i++];
-
-                    entity.turrets[turretIndex] = parseEntity();
-                }
-                i++;
-            }
-            if (entityFlags & (1 << 5)) {
-                const entityDataFlags = packet[i++];
-                entity.autoSpin = Boolean(entityDataFlags & (1 << 0));
-                entity.reverseTank = Boolean(entityDataFlags & (1 << 1));
-                const unknown1 = Boolean(entityDataFlags & (1 << 2));
-                entity.invuln = Boolean(entityDataFlags & (1 << 3));
-                entity.damage1 = Boolean(entityDataFlags & (1 << 4));
-                entity.damage2 = Boolean(entityDataFlags & (1 << 5));
-            }
-            if (entityFlags & (1 << 6)) {
-                entity.health = packet[i++] / 255;
-            }
-            if (entityFlags & (1 << 7)) {
-                entity.shield = packet[i++] / 255;
-            }
-            if (entityFlags & (1 << 8)) {
-                entity.alpha = packet[i++] / 255;
-            }
-            if (entityFlags & (1 << 9)) {
-                entity.size = packet[i++]  * 0.0625;
-            }
-            if (entityFlags & (1 << 10)) {
-                entity.score = packet[i++];
-            }
-            if (entityFlags & (1 << 11)) {
-                entity.name = packet[i++];
-            }
-            if (entityFlags & (1 << 12)) {
-                entity.color = packet[i++];
-            }
-            if (entityFlags & (1 << 13)) {
-                entity.layer = packet[i++];
-            }
-
-            return entity;
-        }
-
-        while (packet[i] !== -1) {
-            const id = packet[i++];
-            const entity = parseEntity();
-            entity.id = id;
-            output.changed.push(entity);
-        }
-
-        return output;
     },
-    w (packet) { // welcome
-        return {
-            playerId: packet[0]
-        };
-    },
-    P (packet) { // player list
-        const removed = [];
-        const changed = [];
-
-        let i = 0;
-
-        const removedLength = packet[i++];
-        for (let j = 0; j < removedLength; j++) {
-            removed.push({
-                socketId: packet[i++]
-            });
+    T: {
+        serialize({ data }) {
+            return ["T", JSON.stringify(data)];
+        },
+        deserialize(packet) {
+            return {
+                data: JSON.parse(packet[0])
+            };
         }
-
-        const changedLength = packet[i++];
-        for (let j = 0; j < changedLength; j++) {
-            const socketId = packet[i++];
-            const flag = packet[i++];
-            const name = packet[i++];
-            const mockupIndex = packet[i++];
-
-            changed.push({
-                socketId: socketId,
-                self: Boolean(flag & 1),
-                operatorLevel: flag >> 1,
-                name,
-                mockupIndex
-            });
+    },
+    p: {
+        serialize() {
+            return ["p"];
+        },
+        deserialize() {
+            return {};
         }
-
-        return { removed, changed };
     },
-    m (packet) { // message
-        return {
-            message: packet[0]
-        };
+    s: {
+        serialize({ name = "", partyId = "", autoLevelUp, incognito, anonymous, stealth, spytab }) {
+            return ["s", name, partyId, autoLevelUp | incognito << 1 | anonymous << 2 | stealth << 3 | spytab << 4];
+        },
+        deserialize(packet) {
+            return {
+                name: packet[0],
+                partyId: packet[1],
+                autoLevelUp: Boolean(packet[2] & 1 << 0),
+                incognito: Boolean(packet[2] & 1 << 1),
+                anonymous: Boolean(packet[2] & 1 << 2),
+                stealth: Boolean(packet[2] & 1 << 3),
+                spytab: Boolean(packet[2] & 1 << 4)
+            };
+        }
     },
-    J (packet) { // mockups
-        const output = {};
-
-        let i = 0;
-        const length = packet[i++];
-
-        for (let j = 0; j < length; j++) {
-            const mockup = {};
-            mockup.mockupIndex = packet[i++];
-
-            mockup.name = packet[i++];
-            mockup.scoreText = packet[i++];
-            mockup.color = packet[i++];
-
-            mockup.shape = packet[i++];
-            if (mockup.shape === 0x800) {
-                const pathLength = packet[i++];
-                mockup.shape = [];
-                for (let k = 0; k < pathLength; k++) {
-                    mockup.shape.push([packet[i++], packet[i++]]);
-                }
+    e: {
+        serialize({ id, result }) {
+            return ["e", id, result];
+        },
+        deserialize(packet) {
+            return {
+                id: packet[0],
+                result: packet[1]
+            };
+        }
+    },
+    R: {
+        serialize({ input, result }) {
+            return ["R", input, result];
+        },
+        deserialize(packet) {
+            return {
+                input: packet[0],
+                result: packet[1]
+            };
+        }
+    },
+    G: {
+        serialize({ id, token, error = "" }) {
+            return ["G", id, token, error];
+        },
+        deserialize(packet) {
+            return {
+                id: packet[0],
+                token: packet[1],
+                error: packet[2]
+            };
+        }
+    },
+    U: {
+        serialize({ index }) {
+            return ["U", index];
+        },
+        deserialize(packet) {
+            return {
+                index: packet[0]
+            };
+        }
+    },
+    x: {
+        serialize({ index, type = "add", value }) {
+            switch (type) {
+                case "add":
+                    return ["x", index, -1];
+                case "max":
+                    return ["x", index, 255];
+                case "set":
+                    return ["x", index, value];
             }
-
-            mockup.entityType = packet[i++];
-            mockup.shootsType = packet[i++];
-
-            mockup.offset = packet[i++];
-            mockup.size = packet[i++];
-
-            const upgradesLength = packet[i++];
-            mockup.upgrades = [];
-            for (let k = 0; k < upgradesLength; k++) {
-                mockup.upgrades.push({
-                    tier: packet[i++],
-                    mockupIndex: packet[i++]
-                });
+        },
+        deserialize(packet) {
+            return {
+                index: packet[0],
+                value: packet[1],
+                type: packet[1] === -1 ? "add" : packet[1] === 255 ? "max" : "set"
+            };
+        }
+    },
+    C: {
+        serialize({ x, y, up, down, left, right, lmb, rmb, mmb, scope, timeout }) {
+            return ["C", x, y, up | down << 1 | left << 2 | right << 3 | lmb << 4 | rmb << 5 | mmb << 6 | scope << 7 | timeout << 8];
+        },
+        deserialize(packet) {
+            return {
+                x: packet[0],
+                y: packet[1],
+                up: Boolean(packet[2] & 1 << 0),
+                down: Boolean(packet[2] & 1 << 1),
+                left: Boolean(packet[2] & 1 << 2),
+                right: Boolean(packet[2] & 1 << 3),
+                lmb: Boolean(packet[2] & 1 << 4),
+                rmb: Boolean(packet[2] & 1 << 5),
+                mmb: Boolean(packet[2] & 1 << 6),
+                scope: Boolean(packet[2] & 1 << 7),
+                timeout: Boolean(packet[2] & 1 << 8)
+            };
+        }
+    },
+    t: {
+        serialize({ action }) {
+            return ["t", ["autofire", "autospin", "override", "reverseTank", "reverseMouse"].indexOf(action)];
+        },
+        deserialize(packet) {
+            return {
+                action: ["autofire", "autospin", "override", "reverseTank", "reverseMouse"][packet[0]]
+            };
+        }
+    },
+    L: {
+        serialize() {
+            return ["L"];
+        },
+        deserialize() {
+            return {};
+        }
+    },
+    0: {
+        serialize({ keyCode, isKeyDown }) {
+            return ["0", keyCode, isKeyDown];
+        },
+        deserialize(packet) {
+            return {
+                keyCode: packet[0],
+                isKeyDown: packet[1]
+            };
+        }
+    },
+    M: {
+        serialize({ message }) {
+            return ["M", message];
+        },
+        deserialize(packet) {
+            return {
+                message: packet[0]
+            };
+        }
+    },
+    P: {
+        serialize({ action, socketId }) {
+            return ["P", ["promote", "demote", "kick"].indexOf(action), socketId];
+        },
+        deserialize(packet) {
+            return {
+                action: ["promote", "demote", "kick"][packet[0]],
+                socketId: packet[1]
+            };
+        }
+    },
+    r: {
+        serialize({ socketId }) {
+            return ["r", socketId];
+        },
+        deserialize(packet) {
+            return {
+                socketId: packet[0]
             }
-
-            const gunsLength = packet[i++];
-            mockup.guns = [];
-            for (let k = 0; k < gunsLength; k++) {
-                mockup.guns.push({
-                    x: packet[i++],
-                    y: packet[i++],
-                    length: packet[i++],
-                    width: packet[i++],
-                    aspect: packet[i++],
-                    angle: packet[i++]
-                });
-            }
-
-            const turretsLength = packet[i++];
-            mockup.turrets = [];
-            for (let k = 0; k < turretsLength; k++) {
-                mockup.turrets.push({
-                    mockupIndex: packet[i++],
-                    scale: packet[i++],
-                    offset: packet[i++],
-                    direction: packet[i++],
-                    renderOnTop: packet[i++],
-                    angle: packet[i++]
-                });
-            }
-
-            output[mockup.mockupIndex] = mockup;
         }
-        return { mockups: output };
     },
-    C (packet) { // proof of work
-        return {
-            input: packet[0]
-        };
-    },
-    e (packet) { // eval
-        return {
-            id: packet[0],
-            code: packet[1]
-        };
-    },
-    G (packet) { // turnstile request
-        return {
-            id: packet[0],
-            siteKey: packet[1]
-        };
-    },
-    p () { // ping
-        return {};
-    },
-    b (packet) { // broadcast
-        const minimapRemoved = [];
-        const minimapChanged = [];
-        const teamMinimapRemoved = [];
-        const teamMinimapChanged = [];
-        const leaderboardRemoved = [];
-        const leaderboardChanged = [];
-
-        let i = 0;
-
-        const minimapRemovedLength = packet[i++];
-        for (let j = 0; j < minimapRemovedLength; j++) {
-            minimapRemoved.push({
-                id: packet[i++]
-            });
+    K: {
+        serialize() {
+            return ["K"];
+        },
+        deserialize() {
+            return {};
         }
-
-        const minimapChangedLength = packet[i++];
-        for (let j = 0; j < minimapChangedLength; j++) {
-            minimapChanged.push({
-                id: packet[i++],
-                type: packet[i++],
-                x: packet[i++] / 255,
-                y: packet[i++] / 255,
-                color: packet[i++],
-                size: packet[i++]
-            });
-        }
-
-        const teamMinimapRemovedLength = packet[i++];
-        for (let j = 0; j < teamMinimapRemovedLength; j++) {
-            teamMinimapRemoved.push({
-                id: packet[i++]
-            });
-        }
-
-        const teamMinimapChangedLength = packet[i++];
-        for (let j = 0; j < teamMinimapChangedLength; j++) {
-            teamMinimapChanged.push({
-                id: packet[i++],
-                x: packet[i++] / 255,
-                y: packet[i++] / 255,
-                color: packet[i++]
-            });
-        }
-
-        const leaderboardRemovedLength = packet[i++];
-        for (let j = 0; j < leaderboardRemovedLength; j++) {
-            leaderboardRemoved.push({
-                id: packet[i++]
-            });
-        }
-
-        const leaderboardChangedLength = packet[i++];
-        for (let j = 0; j < leaderboardChangedLength; j++) {
-            leaderboardChanged.push({
-                id: packet[i++],
-                score: packet[i++],
-                mockupIndex: packet[i++],
-                name: packet[i++],
-                color: packet[i++],
-                barColor: packet[i++]
-            });
-        }
-
-        return { minimapChanged, minimapRemoved, teamMinimapChanged, teamMinimapRemoved, leaderboardChanged, leaderboardRemoved };
     },
-    c (packet) { // camera
-        return {
-            bodyX: packet[0],
-            bodyY: packet[1],
-            bodyFov: packet[2]
-        };
-    },
-    M (packet) { // chat message
-        return {
-            entityId: packet[0],
-            message: packet[1],
-            isGlobal: packet[2]
-        };
-    },
-    K (packet) { // kick
-        return {
-            reason: packet[0]
-        };
-    },
-    F (packet) { // death
-        let i = 0;
-
-        const time = packet[i++];
-        const score = packet[i++];
-        const timeAlive = packet[i++];
-
-        const playerKills = packet[i++];
-        const assistKills = packet[i++];
-        const bossKills = packet[i++];
-        const foodKills = packet[i++];
-
-        const killType = packet[i++];
-        const killInfo = {};
-        switch (killType) {
-            case 1:
-                killInfo.amount = packet[i++];
-                break;
-            case 2:
-                killInfo.amount = packet[i++];
-                killInfo.name = packet[i++];
-                break;
+    A: {
+        serialize() {
+            return ["A"];
+        },
+        deserialize() {
+            return {};
         }
-
-        const deathType = packet[i++];
-        
-        const killers = [];
-        const killersLength = deathType === 0 ? packet[i++] : 0;
-        for (let k = 0; k < killersLength; k++) {
-            killers.push({
-                name: packet[i++],
-                tank: packet[i++]
-            });
+    },
+    D: {
+        serialize() {
+            return ["D"];
+        },
+        deserialize() {
+            return {};
         }
-
-        const serverActivity = packet[i++];
-        const serversTraveled = packet[i++];
-        const respawnTime = packet[i++];
-        const saveCode = packet[i++];
-
-        return {
-            time,
-            timeAlive,
-            score,
-            kills: {
-                player: playerKills,
-                assist: assistKills,
-                boss: bossKills,
-                food: foodKills
-            },
-            killInfo: {
-                type: ["none", "food", "player"][killType],
-                ...killInfo
-            },
-            killers,
-            deathType: ["killed", "dumb_death", "self_destruct", "surrender_control", "save_score"][deathType],
-            serverActivity,
-            serversTraveled,
-            respawnTime: respawnTime + 2000,
-            saveCode,
-        };
     },
-    r (packet) { // server travel
-        return {
-            server: packet[0],
-            travelToken: packet[1]
-        };
-    },
-    k (packet) { // key
-        return {
-            playerToken: packet[0]
-        };
+    V: {
+        serialize() {
+            return ["V"];
+        },
+        deserialize() {
+            return {};
+        }
     }
 };
 
-class ArrasClient extends EventEmitter {
+const serverPackets = {
+    R: {
+        serialize({ info, short, roomX1, roomY1, roomX2, roomY2, unknown, tiles }) {
+            if (short) return ["R", [...Object.entries(info).map(d => d.join("=")), "end"].join(",")];
+            return ["R", Object.entries(info).map(d => d.join("=")).join(","), roomX1, roomY1, roomX2, roomY2, unknown, tiles[0].length, tiles.length, ...tiles.flat().map(color => serializeColor(color))];
+        },
+        deserialize(packet) {
+            let i = 0;
+
+            const info = Object.fromEntries(packet[i++].split(",").filter(d => d).map(d => [...d.split("="), true]));
+            if (info.end) {
+                delete info.end;
+                return {
+                    info,
+                    short: true
+                }
+            }
+
+            const roomX1 = packet[i++];
+            const roomY1 = packet[i++];
+            const roomX2 = packet[i++];
+            const roomY2 = packet[i++];
+            const unknown = packet[i++];
+            const tilesWidth = packet[i++];
+            const tilesHeight = packet[i++];
+
+            const tiles = Array(tilesHeight).fill().map(() => Array(tilesWidth));
+
+            for (let y = 0; y < tilesHeight; y++) {
+                for (let x = 0; x < tilesWidth; x++) {
+                    tiles[y][x] = deserializeColor(packet[i++]);
+                }
+            }
+
+            return {
+                info,
+                roomX1,
+                roomY1,
+                roomX2,
+                roomY2,
+                unknown,
+                tiles
+            };
+        }
+    },
+    u: {
+        serialize({ bodyX, bodyY, bodyFov, mspt, speed, mockupIndex, treeMockupIndex, color, id, score, kills, skillPoints, maxSkills, skills, upgrades, partyCode, operatorLevel, dead, removed, changed }) {
+            const packet = [
+                "u",
+                bodyX,
+                bodyY,
+                bodyFov,
+                0
+            ];
+
+            if (mspt != null) {
+                packet[4] |= (1 << 0);
+                packet.push(mspt);
+            }
+            if (speed != null) {
+                packet[4] |= (1 << 1);
+                packet.push(speed);
+            }
+            if (mockupIndex != null && treeMockupIndex != null) {
+                packet[4] |= (1 << 2);
+                packet.push(mockupIndex, treeMockupIndex);
+            }
+            if (color != null && id != null) {
+                packet[4] |= (1 << 3);
+                packet.push(serializeColor(color), id);
+            }
+            if (score != null) {
+                packet[4] |= (1 << 4);
+                packet.push(score);
+            }
+            if (kills != null) {
+                packet[4] |= (1 << 5);
+                packet.push(
+                    kills.player,
+                    kills.assist,
+                    kills.boss,
+                    kills.food
+                );
+            }
+            if (skillPoints != null) {
+                packet[4] |= (1 << 6);
+                packet.push(skillPoints);
+            }
+            if (maxSkills != null) {
+                packet[4] |= (1 << 7);
+                packet.push(...maxSkills);
+            }
+            if (skills != null) {
+                packet[4] |= (1 << 8);
+                packet.push(...skills);
+            }
+            if (upgrades != null) {
+                packet[4] |= (1 << 9);
+                packet.push(upgrades.length, ...upgrades);
+            }
+            if (partyCode != null) {
+                packet[4] |= (1 << 10);
+                packet.push(partyCode);
+            }
+            if (operatorLevel != null) {
+                packet[4] |= (1 << 11);
+                packet.push(operatorLevel);
+            }
+
+            packet.push(
+                ...dead.map(e => e.id),
+                -1,
+                ...removed.map(e => e.id),
+                -1
+            );
+
+            function flattenEntity(entity) {
+                let i = packet.length;
+                packet.push(0);
+
+                if (entity.deltaX != null || entity.deltaY != null) {
+                    packet[i] |= 1 << 0;
+                    packet.push((entity.deltaX ?? 0) * 4, (entity.deltaY ?? 0) * 4);
+                }
+                if (entity.deltaFacing != null) {
+                    packet[i] |= 1 << 1;
+                    packet.push(entity.deltaFacing * 512 / Math.PI);
+                }
+                if (entity.mockupIndex != null) {
+                    packet[i] |= 1 << 2;
+                    packet.push(entity.mockupIndex);
+                }
+                if (entity.guns != null) {
+                    packet[i] |= 1 << 3;
+                    for (const gun of Object.values(entity.guns)) {
+                        let j = packet.length + 1;
+                        packet.push(
+                            gun.index,
+                            0
+                        );
+
+                        if (gun.time != null) {
+                            packet[j] |= 1 << 0;
+                            packet.push(gun.time);
+                        }
+                        if (gun.power != null) {
+                            packet[j] |= 1 << 1;
+                            packet.push(gun.power);
+                        }
+                    }
+                    packet.push(-1);
+                }
+                if (entity.turrets != null) {
+                    packet[i] |= 1 << 4;
+                    for (const turret of Object.values(entity.turrets)) {
+                        packet.push(turret.index);
+                        flattenEntity(turret);
+                    }
+                    packet.push(-1);
+                }
+                if (entity.twiggle != null && entity.reverse != null && entity.drawHealth != null && entity.invuln != null && entity.damage1 != null && entity.damage2 != null) {
+                    packet[i] |= 1 << 5;
+                    packet.push(entity.twiggle | entity.reverse << 1 | entity.drawHealth << 2 | entity.invuln << 3 | entity.damage1 << 4 | entity.damage2 << 5);
+                }
+                if (entity.health != null) {
+                    packet[i] |= 1 << 6;
+                    packet.push(entity.health * 255);
+                }
+                if (entity.shield != null) {
+                    packet[i] |= 1 << 7;
+                    packet.push(entity.shield * 255);
+                }
+                if (entity.alpha != null) {
+                    packet[i] |= 1 << 8;
+                    packet.push(entity.alpha * 255);
+                }
+                if (entity.size != null) {
+                    packet[i] |= 1 << 9;
+                    packet.push(entity.size * 16);
+                }
+                if (entity.score != null) {
+                    packet[i] |= 1 << 10;
+                    packet.push(entity.score);
+                }
+                if (entity.name != null) {
+                    packet[i] |= 1 << 11;
+                    packet.push(entity.name);
+                }
+                if (entity.color != null) {
+                    packet[i] |= 1 << 12;
+                    packet.push(serializeColor(entity.color));
+                }
+                if (entity.layer != null) {
+                    packet[i] |= 1 << 13;
+                    packet.push(entity.layer);
+                }
+            }
+
+            for (const entity of changed) {
+                packet.push(entity.id);
+                flattenEntity(entity);
+            }
+            packet.push(-1);
+
+            return packet;
+        },
+        deserialize(packet) {
+            let i = 0;
+
+            const output = {
+                bodyX: packet[i++],
+                bodyY: packet[i++],
+                bodyFov: packet[i++],
+                dead: [],
+                removed: [],
+                changed: []
+            };
+
+            const updateFlags = packet[i++];
+
+            if (updateFlags & (1 << 0)) {
+                output.mspt = packet[i++];
+            }
+            if (updateFlags & (1 << 1)) {
+                output.speed = packet[i++];
+            }
+            if (updateFlags & (1 << 2)) {
+                output.mockupIndex = packet[i++];
+                output.treeMockupIndex = packet[i++];
+            }
+            if (updateFlags & (1 << 3)) {
+                output.color = deserializeColor(packet[i++]);
+                output.id = packet[i++];
+            }
+            if (updateFlags & (1 << 4)) {
+                output.score = packet[i++];
+            }
+            if (updateFlags & (1 << 5)) {
+                output.kills = {
+                    player: packet[i++],
+                    assist: packet[i++],
+                    boss: packet[i++],
+                    food: packet[i++]
+                };
+            }
+            if (updateFlags & (1 << 6)) {
+                output.skillPoints = packet[i++];
+            }
+            if (updateFlags & (1 << 7)) {
+                output.maxSkills = [];
+                for (let j = 0; j < 10; j++) {
+                    output.maxSkills.push(packet[i++]);
+                }
+            }
+            if (updateFlags & (1 << 8)) {
+                output.skills = [];
+                for (let j = 0; j < 10; j++) {
+                    output.skills.push(packet[i++]);
+                }
+            }
+            if (updateFlags & (1 << 9)) {
+                const upgradesLength = packet[i++];
+                output.upgrades = [];
+                for (let j = 0; j < upgradesLength; j++) {
+                    output.upgrades.push(packet[i++]);
+                }
+            }
+            if (updateFlags & (1 << 10)) {
+                output.partyCode = packet[i++];
+            }
+            if (updateFlags & (1 << 11)) {
+                output.operatorLevel = packet[i++];
+            }
+
+            while (packet[i] !== -1) {
+                output.dead.push({
+                    id: packet[i++]
+                });
+            }
+            i++;
+
+            while (packet[i] !== -1) {
+                output.removed.push({
+                    id: packet[i++]
+                });
+            }
+            i++;
+
+            function parseEntity() {
+                const entity = {};
+                const entityFlags = packet[i++];
+
+                if (entityFlags & (1 << 0)) {
+                    entity.deltaX = packet[i++] / 4;
+                    entity.deltaY = packet[i++] / 4;
+                }
+                if (entityFlags & (1 << 1)) {
+                    entity.deltaFacing = packet[i++] * Math.PI / 512;
+                }
+                if (entityFlags & (1 << 2)) {
+                    entity.mockupIndex = packet[i++];
+                }
+                if (entityFlags & (1 << 3)) {
+                    entity.guns = {};
+                    while (packet[i] !== -1) {
+                        const gunIndex = packet[i++];
+                        const gunFlags = packet[i++];
+                        const gun = { index: gunIndex };
+
+                        if (gunFlags & (1 << 0)) gun.time = packet[i++];
+                        if (gunFlags & (1 << 1)) gun.power = packet[i++];
+
+                        entity.guns[gunIndex] = gun;
+                    }
+                    i++;
+                }
+                if (entityFlags & (1 << 4)) {
+                    entity.turrets = {};
+                    while (packet[i] !== -1) {
+                        const turretIndex = packet[i++];
+
+                        const turret = entity.turrets[turretIndex] = parseEntity();
+                        turret.index = turretIndex;
+                    }
+                    i++;
+                }
+                if (entityFlags & (1 << 5)) {
+                    const entityDataFlags = packet[i++];
+                    entity.twiggle = Boolean(entityDataFlags & (1 << 0));
+                    entity.reverse = Boolean(entityDataFlags & (1 << 1));
+                    entity.drawHealth = Boolean(entityDataFlags & (1 << 2));
+                    entity.invuln = Boolean(entityDataFlags & (1 << 3));
+                    entity.damage1 = Boolean(entityDataFlags & (1 << 4));
+                    entity.damage2 = Boolean(entityDataFlags & (1 << 5));
+                }
+                if (entityFlags & (1 << 6)) {
+                    entity.health = packet[i++] / 255;
+                }
+                if (entityFlags & (1 << 7)) {
+                    entity.shield = packet[i++] / 255;
+                }
+                if (entityFlags & (1 << 8)) {
+                    entity.alpha = packet[i++] / 255;
+                }
+                if (entityFlags & (1 << 9)) {
+                    entity.size = packet[i++] / 16;
+                }
+                if (entityFlags & (1 << 10)) {
+                    entity.score = packet[i++];
+                }
+                if (entityFlags & (1 << 11)) {
+                    entity.name = packet[i++];
+                }
+                if (entityFlags & (1 << 12)) {
+                    entity.color = deserializeColor(packet[i++]);
+                }
+                if (entityFlags & (1 << 13)) {
+                    entity.layer = packet[i++];
+                }
+
+                return entity;
+            }
+
+            while (packet[i] !== -1) {
+                const id = packet[i++];
+                const entity = parseEntity();
+                entity.id = id;
+                output.changed.push(entity);
+            }
+
+            return output;
+        }
+    },
+    w: {
+        serialize({ playerId }) {
+            return ["w", playerId];
+        },
+        deserialize(packet) {
+            return {
+                playerId: packet[0]
+            };
+        }
+    },
+    P: {
+        serialize({ removed, changed }) {
+            const packet = ["P"];
+
+            packet.push(removed.length);
+            for (const player of removed) {
+                packet.push(player.socketId);
+            }
+
+            packet.push(changed.length);
+            for (const player of changed) {
+                packet.push(
+                    player.socketId,
+                    player.self | player.operatorLevel << 1,
+                    player.name,
+                    player.mockupIndex
+                );
+            }
+
+            return packet;
+        },
+        deserialize(packet) {
+            let i = 0;
+
+            const removed = [];
+            const changed = [];
+
+            const removedLength = packet[i++];
+            for (let j = 0; j < removedLength; j++) {
+                removed.push({
+                    socketId: packet[i++]
+                });
+            }
+
+            const changedLength = packet[i++];
+            for (let j = 0; j < changedLength; j++) {
+                const socketId = packet[i++];
+                const flag = packet[i++];
+                const name = packet[i++];
+                const mockupIndex = packet[i++];
+
+                changed.push({
+                    socketId: socketId,
+                    self: Boolean(flag & 1),
+                    operatorLevel: flag >> 1,
+                    name,
+                    mockupIndex
+                });
+            }
+
+            return { removed, changed };
+        }
+    },
+    m: {
+        serialize({ message }) {
+            return ["m", message];
+        },
+        deserialize(packet) {
+            return {
+                message: packet[0]
+            };
+        }
+    },
+    J: {
+        serialize({ mockups }) {
+            const packet = ["J"];
+
+            const values = Object.values(mockups);
+            packet.push(values.length);
+
+            for (const mockup of values) {
+                packet.push(
+                    mockup.mockupIndex,
+                    `${mockup.name}${mockup.censorName ? "/N" : ""}${mockup.censorDesign ? "/D" : ""}`,
+                    mockup.scoreText,
+                    serializeColor(mockup.color)
+                );
+
+                let shape = mockup.shape.sides;
+                if (mockup.shape.flip) shape |= 1 << 9;
+                if (mockup.shape.star) shape |= 1 << 10;
+                if (mockup.shape.path || mockup.shape.threeD) shape |= 1 << 11;
+
+                packet.push(shape);
+                if (mockup.shape.path) {
+                    packet.push(
+                        mockup.shape.path.length,
+                        ...mockup.shape.path.flat()
+                    );
+                }
+
+                packet.push(
+                    mockup.size,
+                    mockup.bulletType,
+                    mockup.offset,
+                    mockup.scale,
+                    mockup.upgrades.length,
+                    ...mockup.upgrades.flatMap(u => [u.tier, u.mockupIndex]),
+                    mockup.guns.length,
+                    ...mockup.guns.flatMap(g => [g.offset, g.direction, g.length, g.width, g.aspect, g.angle]),
+                    mockup.turrets.length,
+                    ...mockup.turrets.flatMap(t => [t.mockupIndex, t.scale, t.offset, t.direction, t.layer, t.angle])
+                );
+            }
+
+            return packet;
+        },
+        deserialize(packet) {
+            let i = 0;
+
+            const mockups = {};
+            const length = packet[i++];
+
+            for (let j = 0; j < length; j++) {
+                const mockup = {};
+                mockup.mockupIndex = packet[i++];
+
+                mockup.name = packet[i++];
+
+                if (mockup.name.endsWith("/D")) {
+                    mockup.censorDesign = true;
+                    mockup.name = mockup.name.slice(0, -2);
+                }
+                if (mockup.name.endsWith("/N")) {
+                    mockup.censorName = true;
+                    mockup.name = mockup.name.slice(0, -2);
+                }
+
+                mockup.scoreText = packet[i++];
+
+                mockup.color = deserializeColor(packet[i++]);
+
+                const shape = packet[i++];
+                mockup.shape = {
+                    sides: shape & 0xff
+                };
+                if (shape & 1 << 9) mockup.shape.flip = true;
+                if (shape & 1 << 10) mockup.shape.star = true;
+                if (shape & 1 << 11) {
+                    if (mockup.shape.sides === 0) {
+                        const pathLength = packet[i++];
+                        mockup.shape.path = [];
+                        for (let k = 0; k < pathLength; k++) {
+                            mockup.shape.path.push([packet[i++], packet[i++]]);
+                        }
+                    } else mockup.shape.threeD = true;
+                }
+
+                mockup.size = packet[i++];
+                mockup.bulletType = packet[i++];
+
+                mockup.offset = packet[i++];
+                mockup.scale = packet[i++];
+
+                const upgradesLength = packet[i++];
+                mockup.upgrades = [];
+                for (let k = 0; k < upgradesLength; k++) {
+                    mockup.upgrades.push({
+                        tier: packet[i++],
+                        mockupIndex: packet[i++]
+                    });
+                }
+
+                const gunsLength = packet[i++];
+                mockup.guns = [];
+                for (let k = 0; k < gunsLength; k++) {
+                    mockup.guns.push({
+                        offset: packet[i++],
+                        direction: packet[i++],
+                        length: packet[i++],
+                        width: packet[i++],
+                        aspect: packet[i++],
+                        angle: packet[i++]
+                    });
+                }
+
+                const turretsLength = packet[i++];
+                mockup.turrets = [];
+                for (let k = 0; k < turretsLength; k++) {
+                    mockup.turrets.push({
+                        mockupIndex: packet[i++],
+                        scale: packet[i++],
+                        offset: packet[i++],
+                        direction: packet[i++],
+                        layer: packet[i++],
+                        angle: packet[i++]
+                    });
+                }
+
+                mockups[mockup.mockupIndex] = mockup;
+            }
+
+            return { mockups };
+        }
+    },
+    C: {
+        serialize({ input }) {
+            return ["C", input];
+        },
+        deserialize(packet) {
+            return {
+                input: packet[0]
+            };
+        }
+    },
+    e: {
+        serialize({ id, code }) {
+            return ["e", id, code];
+        },
+        deserialize(packet) {
+            return {
+                id: packet[0],
+                code: packet[1]
+            };
+        }
+    },
+    G: {
+        serialize({ id, siteKey }) {
+            return ["G", id, siteKey];
+        },
+        deserialize(packet) {
+            return {
+                id: packet[0],
+                siteKey: packet[1]
+            };
+        }
+    },
+    p: {
+        serialize() {
+            return ["p"];
+        },
+        deserialize() {
+            return {};
+        }
+    },
+    b: {
+        serialize({ minimapRemoved, minimapChanged, minimapReset, teamMinimapRemoved, teamMinimapChanged, teamMinimapReset, leaderboardRemoved, leaderboardChanged, leaderboardReset }) {
+            const packet = ["b"];
+
+            if (minimapReset) {
+                packet.push(-1);
+            } else {
+                packet.push(minimapRemoved.length);
+                for (const { id } of minimapRemoved) {
+                    packet.push(id);
+                }
+            }
+
+            packet.push(minimapChanged.length);
+            for (const { id, type, x, y, color, size } of minimapChanged) {
+                packet.push(
+                    id,
+                    type,
+                    x * 255,
+                    y * 255,
+                    serializeColor(color),
+                    size
+                );
+            }
+
+            if (teamMinimapReset) {
+                packet.push(-1);
+            } else {
+                packet.push(teamMinimapRemoved.length);
+                for (const { id } of teamMinimapRemoved) {
+                    packet.push(id);
+                }
+            }
+
+            packet.push(teamMinimapChanged.length);
+            for (const { id, x, y, color } of teamMinimapChanged) {
+                packet.push(
+                    id,
+                    x * 255,
+                    y * 255,
+                    serializeColor(color)
+                );
+            }
+
+            if (leaderboardReset) {
+                packet.push(-1);
+            } else {
+                packet.push(leaderboardRemoved.length);
+                for (const { id } of leaderboardRemoved) {
+                    packet.push(id);
+                }
+            }
+
+            packet.push(leaderboardChanged.length);
+            for (const { id, score, mockupIndex, name, color, barColor } of leaderboardChanged) {
+                packet.push(
+                    id,
+                    score,
+                    mockupIndex,
+                    name,
+                    serializeColor(color),
+                    serializeColor(barColor)
+                );
+            }
+
+            return packet;
+        },
+        deserialize(packet) {
+            let i = 0;
+
+            const minimapRemoved = [];
+            const minimapChanged = [];
+            const teamMinimapRemoved = [];
+            const teamMinimapChanged = [];
+            const leaderboardRemoved = [];
+            const leaderboardChanged = [];
+
+            const minimapRemovedLength = packet[i++];
+            for (let j = 0; j < minimapRemovedLength; j++) {
+                minimapRemoved.push({
+                    id: packet[i++]
+                });
+            }
+
+            const minimapChangedLength = packet[i++];
+            for (let j = 0; j < minimapChangedLength; j++) {
+                minimapChanged.push({
+                    id: packet[i++],
+                    type: packet[i++],
+                    x: packet[i++] / 255,
+                    y: packet[i++] / 255,
+                    color: deserializeColor(packet[i++]),
+                    size: packet[i++]
+                });
+            }
+
+            const teamMinimapRemovedLength = packet[i++];
+            for (let j = 0; j < teamMinimapRemovedLength; j++) {
+                teamMinimapRemoved.push({
+                    id: packet[i++]
+                });
+            }
+
+            const teamMinimapChangedLength = packet[i++];
+            for (let j = 0; j < teamMinimapChangedLength; j++) {
+                teamMinimapChanged.push({
+                    id: packet[i++],
+                    x: packet[i++] / 255,
+                    y: packet[i++] / 255,
+                    color: deserializeColor(packet[i++])
+                });
+            }
+
+            const leaderboardRemovedLength = packet[i++];
+            for (let j = 0; j < leaderboardRemovedLength; j++) {
+                leaderboardRemoved.push({
+                    id: packet[i++]
+                });
+            }
+
+            const leaderboardChangedLength = packet[i++];
+            for (let j = 0; j < leaderboardChangedLength; j++) {
+                leaderboardChanged.push({
+                    id: packet[i++],
+                    score: packet[i++],
+                    mockupIndex: packet[i++],
+                    name: packet[i++],
+                    color: deserializeColor(packet[i++]),
+                    barColor: deserializeColor(packet[i++])
+                });
+            }
+
+            return {
+                minimapRemoved,
+                minimapChanged,
+                minimapReset: minimapRemovedLength === -1,
+                teamMinimapRemoved,
+                teamMinimapChanged,
+                teamMinimapReset: teamMinimapRemovedLength === -1,
+                leaderboardRemoved,
+                leaderboardChanged,
+                leaderboardReset: leaderboardRemovedLength === -1
+            };
+        }
+    },
+    c: {
+        serialize({ bodyX, bodyY, bodyFov }) {
+            return ["c", bodyX, bodyY, bodyFov];
+        },
+        deserialize(packet) {
+            return {
+                bodyX: packet[0],
+                bodyY: packet[1],
+                bodyFov: packet[2]
+            };
+        }
+    },
+    M: {
+        serialize({ entityId, message, isGlobal }) {
+            return ["M", entityId, message, isGlobal];
+        },
+        deserialize(packet) {
+            return {
+                entityId: packet[0],
+                message: packet[1],
+                isGlobal: packet[2]
+            };
+        }
+    },
+    K: {
+        serialize({ reason }) {
+            return ["K", reason];
+        },
+        deserialize(packet) {
+            return {
+                reason: packet[0]
+            };
+        }
+    },
+    F: {
+        serialize({ time, timeAlive, score, kills: { player: playerKills, assist: assistKills, boss: bossKills, food: foodKills }, killInfo, killers, deathType, serverActivity, serversTraveled, respawnTime, saveCode }) {
+            const packet = [
+                "F",
+                time,
+                score,
+                timeAlive,
+                playerKills,
+                assistKills,
+                bossKills,
+                foodKills
+            ];
+
+            const killType = ["none", "food", "player"].indexOf(killInfo.type);
+            packet.push(killType);
+            switch (killType) {
+                case 1:
+                    packet.push(killInfo.amount);
+                    break;
+                case 2:
+                    packet.push(killInfo.name);
+                    break;
+            }
+
+            const type = ["killed", "dumb_death", "self_destruct", "surrender_control", "save_score"].indexOf(deathType);
+            packet.push(type);
+
+            if (type === 0) {
+                packet.push(killers.length);
+                for (const killer of killers) {
+                    packet.push(killer.name, killer.tank);
+                }
+            }
+
+            packet.push(
+                serverActivity,
+                serversTraveled,
+                respawnTime,
+                saveCode
+            );
+
+            return packet;
+        },
+        deserialize(packet) {
+            let i = 0;
+
+            const time = packet[i++];
+            const score = packet[i++];
+            const timeAlive = packet[i++];
+
+            const playerKills = packet[i++];
+            const assistKills = packet[i++];
+            const bossKills = packet[i++];
+            const foodKills = packet[i++];
+
+            const killType = packet[i++];
+            const killInfo = {};
+            switch (killType) {
+                case 1:
+                    killInfo.amount = packet[i++];
+                    break;
+                case 2:
+                    killInfo.amount = packet[i++];
+                    killInfo.name = packet[i++];
+                    break;
+            }
+
+            const deathType = packet[i++];
+
+            const killers = [];
+            const killersLength = deathType === 0 ? packet[i++] : 0;
+            for (let k = 0; k < killersLength; k++) {
+                killers.push({
+                    name: packet[i++],
+                    tank: packet[i++]
+                });
+            }
+
+            const serverActivity = packet[i++];
+            const serversTraveled = packet[i++];
+            const respawnTime = packet[i++];
+            const saveCode = packet[i++];
+
+            return {
+                time,
+                timeAlive,
+                score,
+                kills: {
+                    player: playerKills,
+                    assist: assistKills,
+                    boss: bossKills,
+                    food: foodKills
+                },
+                killInfo: {
+                    type: ["none", "food", "player"][killType],
+                    ...killInfo
+                },
+                killers,
+                deathType: ["killed", "dumb_death", "self_destruct", "surrender_control", "save_score"][deathType],
+                serverActivity,
+                serversTraveled,
+                respawnTime,
+                saveCode
+            };
+        }
+    },
+    r: {
+        serialize({ server, travelToken }) {
+            return ["r", server, travelToken];
+        },
+        deserialize(packet) {
+            return {
+                server: packet[0],
+                travelToken: packet[1]
+            };
+        }
+    },
+    k: {
+        serialize({ playerToken }) {
+            return ["k", playerToken];
+        },
+        deserialize(packet) {
+            return {
+                playerToken: packet[0]
+            };
+        }
+    }
+};
+
+module.exports = class ArrasClient extends EventEmitter {
     static BUILD = "2c170ae5c3f70dd0";
     static PROTOCOLS = ["arras.io#v1.4+sls+et0", "arras.io"];
 
-    constructor(server, { playerName, playerId, playerToken, travelToken, partyId, autoLevelUp, incognito, trackingData, ignoreUnusedPackets, proxy, serverLogs, clientLogs } = {}) {
+    constructor(server, options = {}) {
         super();
 
-        this.playerName = playerName ?? "";
-        this.playerId = playerId ?? "";
-        this.playerToken = playerToken ?? "";
-        this.travelToken = travelToken ?? "";
-        this.partyId = partyId ?? "";
-        this.autoLevelUp = autoLevelUp ?? true;
-        this.incognito = incognito ?? false;
-        this.trackingData = trackingData ?? false;
+        this.options = {
+            name: "",
+            playerId: "",
+            playerToken: "",
+            travelToken: "",
+            partyId: "",
+            autoLevelUp: true,
+            incognito: false,
+            anonymous: false,
+            stealth: false,
+            trackingData: false,
 
-        this.ignoreUnusedPackets = ignoreUnusedPackets ?? false;
-        this.serverLogs = serverLogs ?? false;
-        this.clientLogs = clientLogs ?? false;
+            ignoreUnusedPackets: false,
+            spawn: true,
+            serverLogs: false,
+            clientLogs: false,
+
+            ...options
+        };
 
         this.ws = new WebSocket(
             `wss://${server}/?a=3&b=${ArrasClient.BUILD}&t=${Math.floor(Date.now() / 1000)}`,
@@ -968,7 +1478,7 @@ class ArrasClient extends EventEmitter {
                 headers: {
                     origin: "https://arras.io"
                 },
-                agent: proxy
+                agent: this.options.proxy
             }
         );
         this.ws.addEventListener("open", () => {
@@ -977,61 +1487,77 @@ class ArrasClient extends EventEmitter {
             this.ws.send(msg);
         });
         this.ws.addEventListener("message", async event => {
-            const serverKey = await crypto.subtle.importKey("raw", event.data.slice(0, 32), "X25519", false, []);
-            const clientKeys = await crypto.subtle.generateKey("X25519", false, ["deriveBits"]);
+            const serverKey = crypto.createPublicKey({
+                key: Buffer.concat([
+                    Buffer.from("302a300506032b656e032100", "hex"),
+                    event.data.subarray(0, 32)
+                ]),
+                format: "der",
+                type: "spki"
+            });
+            const clientKeys = crypto.generateKeyPairSync("x25519");
 
-            const sharedKey = await crypto.subtle.deriveBits({
-                name: "X25519",
-                public: serverKey
-            }, clientKeys.privateKey, 256);
-            this.protocol = new ArrasProtocol(new BigInt64Array(sharedKey));
+            const sharedKey = crypto.diffieHellman({
+                publicKey: serverKey,
+                privateKey: clientKeys.privateKey
+            });
 
-            this.usedPackets = this.ignoreUnusedPackets ? ["w", "p", "e", "C", "G", ...Object.keys(this._events).filter(event => event.length === 1)].map(c => c.charCodeAt(0)) : false;
-            this.ws.addEventListener("message", e => this.message(e));
+            this.protocol = new ArrasProtocol(new BigInt64Array(sharedKey.buffer, sharedKey.byteOffset, sharedKey.byteLength / 8));
 
-            const clientPublicKey = await crypto.subtle.exportKey("raw", clientKeys.publicKey);
-            this.ws.send(clientPublicKey);
+            this.usedPackets = this.options.ignoreUnusedPackets ? new Set(["w", "p", "e", "C", "G", ...Object.keys(this._events).filter(event => event.length === 1)].map(c => c.charCodeAt(0))) : false;
+            this.ws.addEventListener("message", this.message);
 
-            this.send(clientPackets.k(this.playerId, this.playerToken, this.travelToken));
-            if (this.trackingData) this.send(clientPackets.T(this.trackingData));
+            this.ws.send(clientKeys.publicKey.export({ format: "raw-public" }));
+
+            this.send("k", {
+                playerId: this.options.playerId,
+                playerToken: this.options.playerToken,
+                travelToken: this.options.travelToken
+            });
+            if (this.options.trackingData) {
+                this.send("T", { data: this.options.trackingData });
+            }
         }, { once: true });
 
         this.ws.addEventListener("close", e => this.emit("close", e));
-        this.ws.addEventListener("error", e => this.emit("error", e))
+        this.ws.addEventListener("error", e => this.emit("error", e));
     }
-    send(packet) {
-        this.ws.send(this.protocol.encrypt(this.protocol.encode(packet)));
-        if (this.clientLogs) console.log("[CLIENT]", packet.map(v => util.inspect(typeof v === "object" ? v.value : v, { compact: true, colors: true, maxStringLength: Infinity })).join(" "));
+    send(packetType, data = {}) {
+        const type = clientPackets[packetType];
+        if (!type) throw `Unknown client packet: ${packetType}`;
+
+        this.ws.send(this.protocol.encrypt(this.protocol.encode(type.serialize(data))));
+        if (this.options.clientLogs) console.log("[CLIENT]", packetType, data);
     }
-    message(event) {
-        const rawPacket = this.protocol.decrypt(event.data.slice(0, -6), this.usedPackets);
+    message = (event) => {
+        const rawPacket = this.protocol.decrypt(event.data.subarray(0, -6), this.usedPackets);
         if (!rawPacket) return;
 
         const packet = this.protocol.decode(rawPacket);
 
-        const type = packet.shift();
-        if (!serverPackets[type]) throw `Unknown packet type ${type}`;
+        const packetType = packet.shift();
+        const type = serverPackets[packetType];
+        if (!type) throw `Unknown server packet: ${packetType}`;
 
-        const data = serverPackets[type](packet);
+        const data = type.deserialize(packet);
 
-        if (this.serverLogs) console.log("[SERVER]", type, data);
+        if (this.options.serverLogs) console.log("[SERVER]", packetType, data);
 
-        switch (type) {
+        switch (packetType) {
             case "w":
-                this.send(clientPackets.s(this.playerName, this.partyId, {
-                    autoLevelUp: this.autoLevelUp,
-                    incognito: this.incognito
-                }));
-                this.send(clientPackets.p());
+                if (this.options.spawn) this.spawn();
+                this.send("p");
                 break;
             case "p":
-                this.send(clientPackets.p());
+                this.send("p");
                 break;
             case "e":
-                const { id, code } = data;
-                const result = vm.runInContext(`(()=>{${code}})()`, vmContext).toString();
-                
-                this.send(clientPackets.e(id, result));
+                const result = vm.runInContext(`(()=>{${data.code}})()`, vmContext).toString();
+
+                this.send("e", {
+                    id: data.id,
+                    result
+                });
                 break;
             case "C":
                 const { input } = data;
@@ -1045,7 +1571,10 @@ class ArrasClient extends EventEmitter {
                     }
                     if (crypto.createHash("sha256").update(string + input).digest().readUint16LE() === 0) break;
                 }
-                this.send(clientPackets.R(input, string));
+                this.send("R", {
+                    input,
+                    result: string
+                });
                 break;
             case "G":
                 fetch(`http://localhost:8080/${data.siteKey}`)
@@ -1054,7 +1583,10 @@ class ArrasClient extends EventEmitter {
                         if (!token) {
                             throw "CAPTCHA solver failed. Make sure you have arras.io open with the extension.";
                         }
-                        this.send(clientPackets.G(data.id, token));
+                        this.send("G", {
+                            id: data.id,
+                            token: token
+                        });
                     })
                     .catch(e => {
                         console.error(e);
@@ -1063,8 +1595,12 @@ class ArrasClient extends EventEmitter {
                 break;
         }
 
-        this.emit(type, data);
+        this.emit(packetType, data);
+    }
+    spawn(options = {}) {
+        this.send("s", {
+            ...this.options,
+            ...options
+        });
     }
 }
-
-module.exports = { ArrasClient, ArrasProtocol, clientPackets, serverPackets };

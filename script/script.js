@@ -87,7 +87,7 @@ class GrowableBuffer {
     set(data) {
         this.check(data.length);
         this.array.set(data, this.offset)
-        this.offset += data.byteLength;
+        this.offset += data.length;
     }
     write(data) {
         const array = encoder.encode(data);
@@ -151,24 +151,12 @@ function chacha20(state) {
     return new Uint8Array(output.buffer);
 }
 
-function clz64(number) {
-    if (number === 0n) return 64;
-
-    const high = Number(number >> 32n);
-    if (high !== 0) return Math.clz32(high);
-
-    const low = Number(number & 0xffffffffn);
-    return Math.clz32(low) + 32;
-}
-
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 class ArrasProtocol {
     constructor(key) {
         this.key = key;
-        this.sentPacketCount = 0n;
-        this.receivedPacketCount = 0n;
 
         const stateBuffer = new ArrayBuffer(64);
         this.state = new DataView(stateBuffer);
@@ -219,7 +207,7 @@ class ArrasProtocol {
         return dataBuffer;
     }
     decrypt(packet, packetIndex) {
-        const size = packet.byteLength;
+        const size = packet.length;
         const output = new Uint8Array(size);
 
         this.state.setBigInt64(56, packetIndex, true);
@@ -309,7 +297,7 @@ class ArrasProtocol {
                         buffer.writeUint32(length);
                         buffer.set(str);
                     } else {
-                        console.log(data);
+                        console.log(packet, data, i);
                         throw "unencodable string";
                     }
                     break;
@@ -404,8 +392,8 @@ const clientPackets = {
         }
     },
     s: {
-        serialize({ name = "", partyId = "", autoLevelUp, incognito, anonymous, stealth }) {
-            return ["s", name, partyId, autoLevelUp | incognito << 1 | anonymous << 2 | stealth << 3 ];
+        serialize({ name = "", partyId = "", autoLevelUp, incognito, anonymous, stealth, spytab }) {
+            return ["s", name, partyId, autoLevelUp | incognito << 1 | anonymous << 2 | stealth << 3 | spytab << 4];
         },
         deserialize(packet) {
             return {
@@ -414,7 +402,8 @@ const clientPackets = {
                 autoLevelUp: Boolean(packet[2] & 1 << 0),
                 incognito: Boolean(packet[2] & 1 << 1),
                 anonymous: Boolean(packet[2] & 1 << 2),
-                stealth: Boolean(packet[2] & 1 << 3)
+                stealth: Boolean(packet[2] & 1 << 3),
+                spytab: Boolean(packet[2] & 1 << 4)
             };
         }
     },
